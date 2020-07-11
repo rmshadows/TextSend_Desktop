@@ -1,3 +1,5 @@
+ ### 注意：2.0版本只能发短语句，有空再整。长语句会出错。
+
  ### TextSend_Desktop
 
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
@@ -27,5 +29,9 @@
  ### 截屏
 
 ![ss](https://images.gitee.com/uploads/images/2020/0711/153143_1a0db9a6_7423713.png "屏幕截图.png")
+
+![main](https://images.gitee.com/uploads/images/2020/0711/161025_b5b60a06_7423713.png "屏幕截图.png")
+
+![help](https://images.gitee.com/uploads/images/2020/0711/161055_15a001d5_7423713.png "屏幕截图.png")
 
 
