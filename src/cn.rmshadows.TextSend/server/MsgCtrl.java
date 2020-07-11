@@ -35,26 +35,34 @@ public class MsgCtrl extends Thread {
 //			PrintWriter out = new PrintWriter(outStream, true);
 //			out.println("连接成功！");
 			System.out.println("用户"+socket.getInetAddress().getHostAddress() + " 已上线。");
-			byte[] buf = new byte[512];
+			byte[] buf = new byte[10240000];
 			while (true) {
 				int bytes_read = inStream.read(buf);
-				if (bytes_read < 0) {
-					break;
-				} else {
+				if (bytes_read != 0) {
 					System.out.print("收到手机消息:");
 					String x = new String(buf, 0, bytes_read);
-					x = AES_Util.decrypt("RmY@TextSend!", x);
-					System.out.println(x);
-					copyToClickboard(x);
-					keyboard();
 					try {
-						String re = "(i386@received):" + x.substring(0, 1);
-						re = AES_Util.encrypt("RmY@TextSend!", re);
-						tBack(re);
+						x = AES_Util.decrypt("RmY@TextSend!", x);
+						System.out.println(x);
+						if(x.substring(0,16).equalsIgnoreCase("(i386@received):")) {
+							x = x.substring(16);
+							copyToClickboard(x);
+							keyboard();
+							try {
+								String re = "(i386@received):" + x.substring(0, 1);
+								re = AES_Util.encrypt("RmY@TextSend!", re);
+								//返回(i386@received):{}第一个字符
+								tBack(re);
+							} catch (Exception e) {
+								String retry = "(i386@RETRY)";
+								retry = AES_Util.encrypt("RmY@TextSend!", retry);
+								tBack(retry);
+							}
+						}else {
+							System.err.println(x);
+						}
 					} catch (Exception e) {
-						String retry = "(i386@RETRY)";
-						retry = AES_Util.encrypt("RmY@TextSend!", retry);
-						tBack(retry);
+						// TODO: handle exception
 					}
 				}
 			}
@@ -109,7 +117,7 @@ public class MsgCtrl extends Thread {
 	 * @param str
 	 */
 	public static void sendMsg(String str) {
-		System.out.println("向手机发送信息：" + str);
+		System.out.println("向手机发送信息：" + AES_Util.decrypt("RmY@TextSend!", str));
 		for (int i = 0, n = staticList.size(); i < n; i++) {
 			Socket sock = (Socket) staticList.get(i);
 			try {

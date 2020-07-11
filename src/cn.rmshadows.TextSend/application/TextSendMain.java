@@ -78,8 +78,8 @@ public class TextSendMain {
 			@Override
 			public void actionPerformed(ActionEvent e) {
 				try {
-					String str = textField.getText().toString();
-					if (str.equals("")) {
+					String str = "(amd6@received):" + textField.getText().toString();
+					if (str.equals("(amd6@received):")) {
 						
 					} else {
 						str = AES_Util.encrypt("RmY@TextSend!", str);
