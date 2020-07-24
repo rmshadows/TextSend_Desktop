@@ -1,4 +1,5 @@
 package application;
+
 /**
  * TextSend
  * Ryan Yim
@@ -26,31 +27,29 @@ import java.net.SocketException;
 import java.util.Enumeration;
 
 public class TextSendMain {
-	
+
 	static String PORT;
-	
+
 	private static void createAndShowGUI() {
 		JFrame.setDefaultLookAndFeelDecorated(true);
 		JFrame mainFrame = new JFrame("TextSend");
 		mainFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 //		Image icon = Toolkit.getDefaultToolkit().getImage("");
 		mainFrame.setIconImage(null);
-		
+
 		mainFrame.setSize(130, 90);
 		mainFrame.setLayout(null);
-		
+
 		/**
-		 * textField:文本框
-		 * sendText:发送
-		 * startServer:启动服务
+		 * textField:文本框 sendText:发送 startServer:启动服务
 		 */
 		JPanel panelForTextField = new JPanel();
 		JPanel panelForButtons = new JPanel();
-		
+
 		JButton startServer = new JButton("启动");
 		JButton sendText = new JButton("发送");
 		JTextField textField = new JTextField(30);
-		
+
 		textField.setEditable(true);
 		textField.setBounds(0, 0, 122, 30);
 		startServer.setBounds(0, 0, 60, 30);
@@ -58,7 +57,7 @@ public class TextSendMain {
 
 		panelForTextField.setLayout(null);
 		panelForButtons.setLayout(null);
-		
+
 		panelForTextField.add(textField);
 		panelForButtons.add(startServer);
 		panelForButtons.add(sendText);
@@ -68,7 +67,7 @@ public class TextSendMain {
 
 		mainFrame.add(panelForTextField);
 		mainFrame.add(panelForButtons);
-		
+
 		/**
 		 * 启动按钮时事件
 		 */
@@ -87,7 +86,7 @@ public class TextSendMain {
 				try {
 					String str = "(amd6@received):" + textField.getText().toString();
 					if (str.equals("(amd6@received):")) {
-						
+
 					} else {
 						str = AES_Util.encrypt("RmY@TextSend!", str);
 						MsgCtrl.sendMsg(str);
@@ -98,15 +97,16 @@ public class TextSendMain {
 				}
 			}
 		});
-		
+
 		mainFrame.setResizable(false);
 		mainFrame.setVisible(true);
 		mainFrame.setAlwaysOnTop(true);
 		mainFrame.setLocationRelativeTo(null);// 居中显示
 	}
-	
+
 	/**
 	 * 启动服务端
+	 * 
 	 * @param PORT String
 	 */
 	static void serverMain(String PORT) {
@@ -118,7 +118,7 @@ public class TextSendMain {
 		}).start();
 	}
 
-    static void getIP(){// get all local ips
+	static void getIP() throws SocketException {// get all local ips
 		Enumeration<NetworkInterface> interfs = NetworkInterface.getNetworkInterfaces();
 		System.out.println("正在獲取电脑本地IP....");
 		int n = 1;
@@ -126,8 +126,8 @@ public class TextSendMain {
 		while (interfs.hasMoreElements()) {
 			NetworkInterface interf = interfs.nextElement();
 			Enumeration<InetAddress> addres = interf.getInetAddresses();
-			if(n==1|getStatus) {
-				System.out.println("<------第"+n+"组网卡------>");
+			if (n == 1 | getStatus) {
+				System.out.println("<------第" + n + "组网卡------>");
 				getStatus = false;
 			}
 			while (addres.hasMoreElements()) {
@@ -140,11 +140,11 @@ public class TextSendMain {
 					getStatus = true;
 				}
 			}
-			if(getStatus) {
-				n+=1;
+			if (getStatus) {
+				n += 1;
 			}
 		}
-		System.out.println("<--没有第"+n+"组网卡，如果以上结果没有显示出你所在局域网的IP地址。请手动查看您的IPv4地址谢谢-->\n");
+		System.out.println("<--没有第" + n + "组网卡，如果以上结果没有显示出你所在局域网的IP地址。请手动查看您的IPv4地址谢谢-->\n");
 		System.out.println("请在您的TextSend安卓客户端中输入手机与电脑同在的局域网的IPv4地址(不出问题的话上面应该有你需要的IP)。");
 		try {
 			System.out.println("\n正在初始化...");
@@ -153,9 +153,9 @@ public class TextSendMain {
 			// TODO 自动生成的 catch 块
 			e.printStackTrace();
 		}
-		System.err.println("\n好的，准备就绪！现在，请点击“启动”按钮！");
-    }
-	
+		System.err.println("\n======>>>>>> 好的，准备就绪！现在，请点击“启动”按钮！<<<<<<======");
+	}
+
 	/**
 	 * 设置服务端口
 	 */
@@ -168,22 +168,23 @@ public class TextSendMain {
 		} catch (InterruptedException e1) {
 			// TODO 自动生成的 catch 块
 			e1.printStackTrace();
-		}
-		finally {
+		} finally {
 			th.interrupt();
 		}
 		PORT = g.getPort();
-		System.err.println("设置服务端口："+PORT);
+		System.err.println("设置服务端口：" + PORT);
 	}
 
 	/**
 	 * main方法
+	 * 
 	 * @param args
+	 * @throws SocketException
 	 */
-	public static void main(String[] args) {
+	public static void main(String[] args) throws SocketException {
 		// TODO 自动生成的方法存根
 		setPort();
-        getIP();
+		getIP();
 		javax.swing.SwingUtilities.invokeLater(new Runnable() {
 			public void run() {
 				createAndShowGUI();
@@ -194,6 +195,7 @@ public class TextSendMain {
 
 /**
  * 设置端口的对话框
+ * 
  * @author jessie
  *
  */
@@ -215,19 +217,16 @@ class GetPort implements Runnable {
 			po = JOptionPane.showInputDialog("请选择服务端口，默认54300端口(未确认将视为退出程序)");
 			if (po.equals(null)) {
 				setName("54300");
-			}
-			else if (po.equals("")) {
+			} else if (po.equals("")) {
 				setName("54300");
-			}
-			else {
+			} else {
 				setName(po);
 			}
 		} catch (Exception e) {
 			// TODO: handle exception
 			System.err.println("退出程序");
 			System.exit(0);
-		}
-		finally {
+		} finally {
 //			System.out.println("Done.");
 		}
 	}
