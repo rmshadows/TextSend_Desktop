@@ -18,6 +18,13 @@ import server.AES_Util;
 import server.MainServer;
 import server.MsgCtrl;
 
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.util.Enumeration;
+
 public class TextSendMain {
 	
 	static String PORT;
@@ -110,6 +117,44 @@ public class TextSendMain {
 			}
 		}).start();
 	}
+
+    static void getIP(){// get all local ips
+		Enumeration<NetworkInterface> interfs = NetworkInterface.getNetworkInterfaces();
+		System.out.println("正在獲取电脑本地IP....");
+		int n = 1;
+		boolean getStatus = false;
+		while (interfs.hasMoreElements()) {
+			NetworkInterface interf = interfs.nextElement();
+			Enumeration<InetAddress> addres = interf.getInetAddresses();
+			if(n==1|getStatus) {
+				System.out.println("<------第"+n+"组网卡------>");
+				getStatus = false;
+			}
+			while (addres.hasMoreElements()) {
+				InetAddress in = addres.nextElement();
+				if (in instanceof Inet4Address) {
+					System.out.println(" - IPv4地址:" + in.getHostAddress());
+					getStatus = true;
+				} else if (in instanceof Inet6Address) {
+					System.out.println(" - IPv6地址:" + in.getHostAddress());
+					getStatus = true;
+				}
+			}
+			if(getStatus) {
+				n+=1;
+			}
+		}
+		System.out.println("<--没有第"+n+"组网卡，如果以上结果没有显示出你所在局域网的IP地址。请手动查看您的IPv4地址谢谢-->\n");
+		System.out.println("请在您的TextSend安卓客户端中输入手机与电脑同在的局域网的IPv4地址(不出问题的话上面应该有你需要的IP)。");
+		try {
+			System.out.println("\n正在初始化...");
+			Thread.sleep(2345);
+		} catch (InterruptedException e) {
+			// TODO 自动生成的 catch 块
+			e.printStackTrace();
+		}
+		System.err.println("\n好的，准备就绪！现在，请点击“启动”按钮！");
+    }
 	
 	/**
 	 * 设置服务端口
@@ -138,6 +183,7 @@ public class TextSendMain {
 	public static void main(String[] args) {
 		// TODO 自动生成的方法存根
 		setPort();
+        getIP();
 		javax.swing.SwingUtilities.invokeLater(new Runnable() {
 			public void run() {
 				createAndShowGUI();
