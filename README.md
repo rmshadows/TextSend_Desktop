@@ -1,5 +1,7 @@
  ### 注意：2.0版本只能发短语句，有空再整。长语句会出错。
 
+  - 当前版本：2.1.1
+
  ### TextSend_Desktop
 
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
