@@ -34,7 +34,7 @@
 
 ![main](https://images.gitee.com/uploads/images/2021/0903/230318_b2442988_7423713.png "屏幕截图.png")
 
-会跳出二维码窗口（可能是浏览器打开）
+这时会跳出二维码窗口（可能是用浏览器打开的），手机客户端可以扫描二维码直接连接
 
 ![QR Code](https://images.gitee.com/uploads/images/2021/0903/230402_b574cc43_7423713.png "屏幕截图.png")
 
