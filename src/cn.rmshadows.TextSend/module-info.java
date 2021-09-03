@@ -11,4 +11,6 @@ module cn.rmshadows.TextSend {
 
 	requires java.datatransfer;
 	requires java.desktop;
+	requires com.google.zxing;
+	requires com.google.zxing.javase;
 }

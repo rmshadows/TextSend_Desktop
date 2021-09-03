@@ -1,4 +1,4 @@
-package server;
+package utils;
 
 import java.io.UnsupportedEncodingException;
 
@@ -12,11 +12,53 @@ import javax.crypto.spec.SecretKeySpec;
  * 来源：https://www.jb51.net/article/111057.htm
  */
 public class AES_Util {
-
+	// 仅用于Debug，不加密
+	private static boolean debug = false;
 	// private static final String CipherMode =
 	// "AES/ECB/PKCS5Padding";使用ECB加密，不需要设置IV，但是不安全
 	private static final String CipherMode = "AES/CFB/NoPadding";// 使用CFB加密，需要设置IV
 
+	// /** 加密(结果为16进制字符串) **/
+	public static String encrypt(String password, String content) {
+		if(!debug) {
+			byte[] data = null;
+			try {
+				data = content.getBytes("UTF-8");
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+			data = encrypt(data, password);
+			String result = byte2hex(data);
+			return result;
+		}else {
+			return content;
+		}
+	}
+	
+	// /** 解密16进制的字符串为字符串 **/
+	public static String decrypt(String password, String content) {
+		if(!debug) {
+			byte[] data = null;
+			try {
+				data = hex2byte(content);
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+			data = decrypt(data, password);
+			if (data == null)
+				return null;
+			String result = null;
+			try {
+				result = new String(data, "UTF-8");
+			} catch (UnsupportedEncodingException e) {
+				e.printStackTrace();
+			}
+			return result;
+		}else {
+			return content;
+		}
+	}
+	
 	/**
 	 * 生成加密后的密钥
 	 *
@@ -59,19 +101,6 @@ public class AES_Util {
 		return null;
 	}
 
-	// /** 加密(结果为16进制字符串) **/
-	public static String encrypt(String password, String content) {
-		byte[] data = null;
-		try {
-			data = content.getBytes("UTF-8");
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		data = encrypt(data, password);
-		String result = byte2hex(data);
-		return result;
-	}
-
 	// /** 解密字节数组 **/
 	private static byte[] decrypt(byte[] content, String password) {
 
@@ -85,26 +114,6 @@ public class AES_Util {
 			e.printStackTrace();
 		}
 		return null;
-	}
-
-	// /** 解密16进制的字符串为字符串 **/
-	public static String decrypt(String password, String content) {
-		byte[] data = null;
-		try {
-			data = hex2byte(content);
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		data = decrypt(data, password);
-		if (data == null)
-			return null;
-		String result = null;
-		try {
-			result = new String(data, "UTF-8");
-		} catch (UnsupportedEncodingException e) {
-			e.printStackTrace();
-		}
-		return result;
 	}
 
 	// /** 字节数组转成16进制字符串 **/
