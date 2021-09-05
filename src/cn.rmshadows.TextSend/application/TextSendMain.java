@@ -8,12 +8,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.io.File;
 import java.io.IOException;
-/**
- * TextSend
- * Ryan Yim
- * Java Swing
- * version 2.0
- */
+
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -39,6 +34,12 @@ import utils.QR_Util;
 import utils.ServerMsgController;
 import utils.SocketDeliver;
 
+/**
+ * TextSend
+ * Ryan Yim
+ * Java Swing
+ * version 3.0
+ */
 public class TextSendMain {
 	// 服务器消息自带的ID
 	final public static int SERVER_ID = -200;
@@ -59,7 +60,7 @@ public class TextSendMain {
 	// 作为客户端使用时，生成的Socket
 	private static Socket client = null;
 	// 客户端是否连接
-	public static boolean client_connected= false;
+	public static boolean client_connected = false;
 
 	// 下面是Swing界面组件
 	private static JFrame frame;
@@ -148,21 +149,21 @@ public class TextSendMain {
 					try {
 						String IP_Addr = "";
 						int port = 54300;
-						if(ta.getText().contains(":")) {
+						if (ta.getText().contains(":")) {
 							String[] connection = ta.getText().split(":");
 							IP_Addr = connection[0];
 							port = Integer.valueOf(connection[1]);
-						}else {
+						} else {
 							IP_Addr = ta.getText();
 						}
-						System.out.println("地址："+IP_Addr+ "       端口："+String.valueOf(port));
-						client = new Socket(IP_Addr, port); 
+						System.out.println("地址：" + IP_Addr + "       端口：" + String.valueOf(port));
+						client = new Socket(IP_Addr, port);
 						new Thread(new ClientMsgController(client)).start();
 						// 监视连接断开就恢复按钮状态
 						new Thread(new Runnable() {
 							@Override
 							public void run() {
-								while(client_connected) {
+								while (client_connected) {
 									try {
 										Thread.sleep(1000);
 									} catch (InterruptedException e) {
@@ -181,7 +182,7 @@ public class TextSendMain {
 							}
 						}).start();
 						client_connected = true;
-					}catch (Exception e1) {
+					} catch (Exception e1) {
 						e1.printStackTrace();
 						// 连接失败
 						System.out.println("客户端连接失败。");
@@ -201,7 +202,8 @@ public class TextSendMain {
 			@Override
 			public void actionPerformed(ActionEvent e) {
 				if (is_running) {
-					ClientMsgController.sendMsgToServer(new Message(ta.getText(), MSG_LEN, ClientMsgController.id, AES_TOKEN));
+					ClientMsgController
+							.sendMsgToServer(new Message(ta.getText(), MSG_LEN, ClientMsgController.id, AES_TOKEN));
 				} else {
 					frame.setVisible(false);
 					is_server = true;
@@ -405,16 +407,20 @@ public class TextSendMain {
 		String prefer_ip = null;
 		boolean find172 = false;
 		for (String ip : ip_addr) {
-			if (ip.substring(0, 7).equals("192.168")) {
-				prefer_ip = ip;
-				break;
-			} else if (ip.substring(0, 4).equals("172.")) {
-				prefer_ip = ip;
-				find172 = true;
-			} else if (ip.substring(0, 3).equals("10.")) {
-				if (!find172) {
+			try {
+				if (ip.substring(0, 7).equals("192.168")) {
 					prefer_ip = ip;
+					break;
+				} else if (ip.substring(0, 4).equals("172.")) {
+					prefer_ip = ip;
+					find172 = true;
+				} else if (ip.substring(0, 3).equals("10.")) {
+					if (!find172) {
+						prefer_ip = ip;
+					}
 				}
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
 		}
 
