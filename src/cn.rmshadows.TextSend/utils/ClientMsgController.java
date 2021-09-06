@@ -67,6 +67,8 @@ class ClientMsgT implements Runnable {
 	@Override
 	public void run() {
 		try {
+			System.out.print("发送加密后的数据：");
+			msg.printData();
 			oos.writeObject(msg);
 			oos.flush();
 		} catch (Exception e) {
@@ -101,7 +103,7 @@ class ClientMsgR implements Runnable {
 					if (get_id) {
 						// 获取ID
 						ClientMsgController.id = Integer.valueOf(m.getNotes());
-						System.out.print("客户端获取到ID：" + String.valueOf(ClientMsgController.id));
+						System.out.println("客户端获取到ID：" + String.valueOf(ClientMsgController.id));
 						get_id = false;
 					} else {
 						if (m.getNotes().equals(ClientMsgController.FB_MSG)) {
@@ -112,6 +114,7 @@ class ClientMsgR implements Runnable {
 							String text = decryptMsgToString(m);
 							// 反馈服务器
 							msgFeedBack(oos);
+							System.out.println("收到服务器的消息："+text);
 							copyToClickboard(text);
 							pasteReceivedMsg();
 						}

@@ -284,11 +284,13 @@ public class TextSendMain {
 				} else {// 不启动浏览器 不生成二维码
 					if (is_running) {
 						start.setText("启动");
+						mode.setText("切换");
 						is_running = false;
 					} else {
 						server(PORT);
 						is_running = true;
 						start.setText("停止");
+						mode.setText("发送");
 					}
 				}
 			}

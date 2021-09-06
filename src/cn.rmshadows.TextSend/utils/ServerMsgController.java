@@ -87,6 +87,7 @@ class ServerMsgT implements Runnable {
 	@Override
 	public void run() {
 		try {
+			System.out.print("发送加密后的数据：");
 			msg.printData();
 			oos.writeObject(msg);
 			oos.flush();
@@ -132,6 +133,7 @@ class ServerMsgR implements Runnable {
 						String msg = decryptMsgToString(m);
 						System.out.println(msg);
 						msgFeedBack();
+						System.out.println("收到客户端的消息："+msg);
 						copyToClickboard(msg);
 						pasteReceivedMsg();
 					}

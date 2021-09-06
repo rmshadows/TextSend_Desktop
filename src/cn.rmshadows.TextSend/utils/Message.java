@@ -21,7 +21,7 @@ public class Message implements Serializable {
 	private int id;
 	// 留言
 	private String notes = null;
-	
+
 	public String getNotes() {
 		return notes;
 	}
@@ -37,7 +37,7 @@ public class Message implements Serializable {
 	void addData(String s) {
 		encrypt_data.add(s);
 	}
-	
+
 	public int getId() {
 		return id;
 	}
@@ -52,14 +52,17 @@ public class Message implements Serializable {
 	 * @param text   字符串
 	 * @param length 每次截取的长度
 	 */
-	public Message(String text, int length , int id, String notes) {
+	public Message(String text, int length, int id, String notes) {
+		if (text != null) {
+			System.out.println("封装字符串：" + text);
+		}
 		setId(id);
-		if(notes != null) {
+		if (notes != null) {
 			setNotes(notes);
-		}else {
+		} else {
 			setNotes("NULL");
 		}
-		if(text != null) {
+		if (text != null) {
 			// 需要截取的长度
 			int r_len = length;
 			int t_len = text.length();
