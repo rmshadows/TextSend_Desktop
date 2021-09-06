@@ -98,6 +98,7 @@ class ClientMsgR implements Runnable {
 		try {
 			boolean get_id = true;
 			while (true) {
+				// 断开操作在TextSendMain中实现
 				Message m = (Message) ois.readObject();
 				if (m.getId() == ClientMsgController.SERVER_ID) {
 					if (get_id) {
