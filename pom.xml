@@ -6,13 +6,6 @@
 	<artifactId>TextSend</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<dependencies>
-		<!-- https://mvnrepository.com/artifact/com.google.zxing/core -->
-		<!-- dependency>
-			<groupId>com.google.zxing</groupId>
-			<artifactId>core</artifactId>
-			<version>3.4.1</version>
-		</dependency -->
-
 		<!-- https://mvnrepository.com/artifact/com.google.zxing/javase -->
 		<dependency>
 			<groupId>com.google.zxing</groupId>

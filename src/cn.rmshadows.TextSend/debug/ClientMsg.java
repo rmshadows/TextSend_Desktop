@@ -37,6 +37,7 @@ public class ClientMsg {
 }
 
 class ClientT implements Runnable {
+	@SuppressWarnings("unused")
 	private Socket socket;
 	private ObjectOutputStream oos;
 

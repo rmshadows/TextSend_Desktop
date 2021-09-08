@@ -8,7 +8,6 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.io.File;
 import java.io.IOException;
-
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -26,7 +25,6 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
-import javax.swing.JTextField;
 
 import utils.ClientMsgController;
 import utils.Message;
@@ -53,6 +51,7 @@ public class TextSendMain {
 	// Socket Server服务是否正在运行
 	public static boolean is_running = false;
 	// 是否是服务界面
+	@SuppressWarnings("unused")
 	private static boolean is_server = true;
 	// 作为客户端使用时，生成的Socket
 	private static Socket client = null;
