@@ -279,7 +279,9 @@ public class TextSendMain {
 						File QR_file = QR_Util.serverQRCode(Prefer_Addr);
 						QR_file.deleteOnExit();
 						// 用浏览器打开
-						browser(String.format("file://%s", QR_file.getAbsolutePath()));
+						// 解决Windows下的兼容问题
+						String qr_url = QR_file.getAbsolutePath().replace("\\", "/");
+						browser(String.format("file:///%s", qr_url));
 						server(PORT);
 						is_running = true;
 						mode.setText("发送");
