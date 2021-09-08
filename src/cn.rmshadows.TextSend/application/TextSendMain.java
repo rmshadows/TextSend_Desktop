@@ -35,10 +35,7 @@ import utils.ServerMsgController;
 import utils.SocketDeliver;
 
 /**
- * TextSend
- * Ryan Yim
- * Java Swing
- * version 3.0
+ * TextSend Ryan Yim Java Swing version 3.0
  */
 public class TextSendMain {
 	// 服务器消息自带的ID
@@ -70,7 +67,6 @@ public class TextSendMain {
 	private static JButton mode;
 	private static JScrollPane s;
 	private static JTextArea ta;
-	private static JTextField tf;
 
 	/**
 	 * 客户端界面
@@ -229,7 +225,7 @@ public class TextSendMain {
 		start = new JButton();
 		mode = new JButton();
 		s = new JScrollPane();
-		tf = new JTextField(30);
+		ta = new JTextArea();
 
 		frame.setTitle("Server");
 		frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -240,15 +236,24 @@ public class TextSendMain {
 		start.setText("启动");
 		mode.setText("切换");
 
-		tf.setEditable(true);
-		tf.setBounds(0, 0, 122, 30);
+		// 设置字体
+//		ta.setFont(new Font(null, 0, 20));
+		// 设置自动换行
+		ta.setLineWrap(true);
+
+		s.setViewportView(ta);
+		s.setBounds(1, 1, 388, 223);
+		panelForTextField.add(s);
+		ta.setBounds(0, 0, 122, 30);
+		s.setBounds(0, 0, 122, 30);
+		
 		start.setBounds(0, 0, 60, 30);
 		mode.setBounds(60, 0, 60, 30);
 
 		panelForTextField.setLayout(null);
 		panelForButtons.setLayout(null);
 
-		panelForTextField.add(tf);
+		panelForTextField.add(s);
 		panelForButtons.add(start);
 		panelForButtons.add(mode);
 
@@ -319,7 +324,7 @@ public class TextSendMain {
 			@Override
 			public void actionPerformed(ActionEvent e) {
 				if (is_running) {
-					Message m = new Message(tf.getText(), MSG_LEN, SERVER_ID, null);
+					Message m = new Message(ta.getText(), MSG_LEN, SERVER_ID, null);
 					ServerMsgController.sendMsgToClient(m);
 				} else {
 					frame.setVisible(false);
@@ -365,11 +370,7 @@ public class TextSendMain {
 	 * @return
 	 */
 	public static void cleanText() {
-		if (is_server) {
-			tf.setText("");
-		} else {
-			ta.setText("");
-		}
+		ta.setText("");
 	}
 
 	/**
