@@ -7,6 +7,14 @@
  - 版本/测试平台：Java 11 Swing Linux （Windows没测试过，但应该也没问题。OSX应该用不了，要改代码）
  - 其实这个应用主要用法是：安卓语音输入 + TextSend = 电脑语音输入。
 
+### 编译
+
+javac --module-source-path src -d bin -m cn.rmshadows.TextSend -encoding UTF-8
+
+java -p bin -m cn.rmshadows.TextSend/application.TextSendMain
+
+jlink --launcher StartTSServer=cn.rmshadows.TextSend/application.TextSendMain --module-path bin --add-modules cn.rmshadows.TextSend --output TextSend_Server
+
  ### 使用方法：
 
  1.打开TextSend电脑服务端，配置防火墙，允许外来流量、同意访问网络。

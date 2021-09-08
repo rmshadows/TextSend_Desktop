@@ -1,5 +1,0 @@
-javac --module-source-path src -d bin -m cn.rmshadows.TextSend -encoding UTF-8
-
-java -p bin -m cn.rmshadows.TextSend/application.TextSendMain
-
-jlink --launcher StartTSServer=cn.rmshadows.TextSend/application.TextSendMain --module-path bin --add-modules cn.rmshadows.TextSend --output TextSend_Server

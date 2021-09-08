@@ -5,7 +5,6 @@
  *
  */
 module cn.rmshadows.TextSend {
-//	exports server;
 	exports application;
 
 	requires java.datatransfer;
