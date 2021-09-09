@@ -22,6 +22,9 @@
 @rem ##########################################################################
 
 @rem Set local scope for the variables with windows NT shell
+
+::set DEFAULT_JVM_OPTS="Dfile.encoding=UTF-8"
+
 if "%OS%"=="Windows_NT" setlocal
 
 set DIRNAME=%~dp0
