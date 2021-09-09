@@ -1,10 +1,23 @@
  # TextSend_Desktop
 
- - Current Version: 3.1.0
+ - Current Version: 3.1.2
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 11 Swing Linux （Windows没测试过，但应该也没问题。OSX应该用不了，要改代码）
  - 其实这个应用主要用法是：安卓语音输入 + TextSend = 电脑语音输入。
+
+备注：
+
+```
+Maven项目是模块化的项目
+Gradle是非模块化的项目
+两个源代码一致，Gradle_NonModular目录仅用于生成运行镜像。
+
+生成Runtime：
+./gradlew build
+./gradlew run
+./gradlew runtime
+```
 
 ### 界面功能
 
@@ -50,6 +63,9 @@
 
 ### 更新日志
 
+- 2021.09.09 - 3.1.2
+  - 添加了多网卡支持
+  - 修复了Windows下空格路径二维码路径报错的Bug
 - 2021.09.06 - 3.1.1
   - 修复了服务端启动的部分小问题
   - 兼容了Windows
