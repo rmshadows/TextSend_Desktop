@@ -485,9 +485,10 @@ public class TextSendMain {
 		Thread th = new Thread(g);
 		th.start();
 		try {
-			th.join(30000);
+			th.join(8000);
 		} catch (InterruptedException e1) {
 			e1.printStackTrace();
+			System.exit(1);
 		} finally {
 			th.interrupt();
 		}
@@ -540,7 +541,7 @@ class GetPort implements Runnable {
 		return port;
 	}
 
-	public void setName(String port) {
+	public void setPort(String port) {
 		this.port = port;
 	}
 
@@ -552,10 +553,10 @@ class GetPort implements Runnable {
 			try {
 				po = JOptionPane.showInputDialog("请选择服务端口，默认54300端口(未确认将视为退出程序)");
 				if (po.equals(null)) {
-					setName("54300");
+					setPort("54300");
 					showing = false;
 				} else if (po.equals("")) {
-					setName("54300");
+					setPort("54300");
 					showing = false;
 				} else {
 					System.out.println("asdsa");
@@ -566,7 +567,7 @@ class GetPort implements Runnable {
 						showing = true;
 						continue;
 					}
-					setName(po);
+					setPort(po);
 					showing = false;
 				}
 			} catch (Exception e) {
