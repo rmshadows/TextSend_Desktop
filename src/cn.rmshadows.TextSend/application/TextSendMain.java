@@ -387,7 +387,7 @@ public class TextSendMain {
 	/**
 	 * 启动服务端
 	 * 
-	 * @param PORT String
+	 * @param port String
 	 */
 	private static void server(String port) {
 		new Thread(new SocketDeliver()).start();
