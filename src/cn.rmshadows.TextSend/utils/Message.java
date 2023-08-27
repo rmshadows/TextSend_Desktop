@@ -4,6 +4,8 @@ import java.io.Serializable;
 import java.util.LinkedList;
 
 import application.TextSendMain;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 
 /**
  * 消息类
@@ -53,14 +55,16 @@ public class Message implements Serializable {
 	 * @param length 每次截取的长度
 	 */
 	public Message(String text, int length, int id, String notes) {
-		if (text != null) {
+		if (text == null) {
+			text = "";
+		}else {
 			System.out.println("封装字符串：" + text);
 		}
 		setId(id);
 		if (notes != null) {
 			setNotes(notes);
 		} else {
-			setNotes("NULL");
+			setNotes("");
 		}
 		if (text != null) {
 			// 需要截取的长度
@@ -90,6 +94,12 @@ public class Message implements Serializable {
 		for (String str : encrypt_data) {
 			System.out.println(str);
 		}
+	}
+
+	public String getJSON(){
+		Gson gson = new GsonBuilder().create();
+		String json = gson.toJson(new GsonMessage(String.valueOf(getId()), getData(), getNotes()));
+		return json;
 	}
 
 }

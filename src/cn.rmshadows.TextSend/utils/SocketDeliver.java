@@ -69,7 +69,7 @@ public class SocketDeliver implements Runnable {
 			// 分发socket
 			while (true) {
 				// 如果有链接，不继续分发
-				while (socket_list.size() >= 1) {
+				while (socket_list.size() >= TextSendMain.maxConnection) {
 					Thread.sleep(1000);
 				}
 				System.out.println("Socket分发中。。。");
