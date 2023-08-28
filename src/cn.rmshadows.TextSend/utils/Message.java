@@ -97,7 +97,9 @@ public class Message implements Serializable {
 	}
 
 	public String getJSON(){
-		Gson gson = new GsonBuilder().create();
+		Gson gson = new GsonBuilder()
+				.registerTypeAdapter(GsonMessage.class, new GsonMessageTypeAdapter())
+				.create();
 		String json = gson.toJson(new GsonMessage(String.valueOf(getId()), getData(), getNotes()));
 		return json;
 	}

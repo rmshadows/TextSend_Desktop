@@ -1,5 +1,8 @@
 package utils;
 
+import com.google.gson.*;
+
+import java.lang.reflect.Type;
 import java.util.LinkedList;
 
 /**
@@ -10,14 +13,26 @@ public class GsonMessage {
     private LinkedList<String> data = new LinkedList<>();
     private String notes = "";
 
-    public GsonMessage(String id, LinkedList<String> data, String notes){
-        if(notes == null){
+    public String getId() {
+        return id;
+    }
+
+    public LinkedList<String> getData() {
+        return data;
+    }
+
+    public String getNotes() {
+        return notes;
+    }
+
+    public GsonMessage(String id, LinkedList<String> data, String notes) {
+        if (notes == null) {
             id = "";
         }
-        if(data == null){
+        if (data == null) {
             data = new LinkedList<String>();
         }
-        if(notes == null){
+        if (notes == null) {
             notes = "";
         }
         this.id = id;
@@ -25,7 +40,7 @@ public class GsonMessage {
         this.notes = notes;
     }
 
-    public void print(){
+    public void print() {
         System.out.println(data);
     }
 
