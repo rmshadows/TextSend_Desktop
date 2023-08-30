@@ -19,12 +19,12 @@ import com.google.zxing.client.j2se.MatrixToImageWriter;
 public class QR_Util {
 	/**
 	 * 根据所给的IP生成二维码
-	 * @param IP
+	 * @param IP IP地址
 	 * @return 返回文件类
 	 */
 	public static File serverQRCode(String IP) {
 		File f = new File("qr.png");
-		try(OutputStream os = new FileOutputStream(f);){
+		try(OutputStream os = new FileOutputStream(f)){
 			byte[] b = createQRCode(500, 500, IP);
 			os.write(b);
 		}catch (Exception e) {
@@ -35,17 +35,14 @@ public class QR_Util {
 	
 	/**
 	 * 生成一个二维码图片
-	 * 
-	 * @param width
-	 * @param height
-	 * @param content
-	 * @return
-	 * @throws WriterException
-	 * @throws IOException
+	 *
+	 * @param width 宽度
+	 * @param height 高度
+	 * @param content 内容
 	 */
 	private static byte[] createQRCode(int width, int height, String content) throws WriterException, IOException {
 		// 二维码基本参数设置
-		Map<EncodeHintType, Object> hints = new HashMap<EncodeHintType, Object>();
+		Map<EncodeHintType, Object> hints = new HashMap<>();
 		hints.put(EncodeHintType.CHARACTER_SET, "utf-8");// 设置编码字符集utf-8
 		hints.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M);// 设置纠错等级L/M/Q/H,纠错等级越高越不易识别，当前设置等级为最高等级H
 		hints.put(EncodeHintType.MARGIN, 0);// 可设置范围为0-10，但仅四个变化0 1(2) 3(4 5 6) 7(8 9 10)

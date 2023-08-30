@@ -1,6 +1,6 @@
 package utils;
-/**
- * JSON传输模式的类
+/*
+ * JSON传输模式的类 可以将gson msg对象转为json
  */
 
 import application.TextSendMain;

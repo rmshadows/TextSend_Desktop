@@ -1,6 +1,6 @@
 package utils;
 
-import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -9,11 +9,11 @@ import javax.crypto.spec.SecretKeySpec;
 /**
  * AES加密工具类
  * @author 伍子夜
- * 来源：https://www.jb51.net/article/111057.htm
+ * 来源：<a href="https://www.jb51.net/article/111057.htm">...</a>
  */
 public class AES_Util {
 	// 仅用于Debug，不加密
-	private static boolean debug = false;
+	private static final boolean debug = false;
 	// private static final String CipherMode =
 	// "AES/ECB/PKCS5Padding";使用ECB加密，不需要设置IV，但是不安全
 	private static final String CipherMode = "AES/CFB/NoPadding";// 使用CFB加密，需要设置IV
@@ -23,13 +23,16 @@ public class AES_Util {
 		if(!debug) {
 			byte[] data = null;
 			try {
-				data = content.getBytes("UTF-8");
+				data = content.getBytes(StandardCharsets.UTF_8);
 			} catch (Exception e) {
 				e.printStackTrace();
 			}
 			data = encrypt(data, password);
-			String result = byte2hex(data);
-			return result;
+			if (data != null) {
+				return byte2hex(data);
+			}else {
+				return null;
+			}
 		}else {
 			return content;
 		}
@@ -47,12 +50,8 @@ public class AES_Util {
 			data = decrypt(data, password);
 			if (data == null)
 				return null;
-			String result = null;
-			try {
-				result = new String(data, "UTF-8");
-			} catch (UnsupportedEncodingException e) {
-				e.printStackTrace();
-			}
+			String result;
+			result = new String(data, StandardCharsets.UTF_8);
 			return result;
 		}else {
 			return content;
@@ -66,7 +65,7 @@ public class AES_Util {
 	 * @return isSucceed
 	 */
 	private static SecretKeySpec createKey(String password) {
-		byte[] data = null;
+		byte[] data;
 		if (password == null) {
 			password = "";
 		}
@@ -79,11 +78,7 @@ public class AES_Util {
 			sb.setLength(32);
 		}
 
-		try {
-			data = sb.toString().getBytes("UTF-8");
-		} catch (UnsupportedEncodingException e) {
-			e.printStackTrace();
-		}
+		data = sb.toString().getBytes(StandardCharsets.UTF_8);
 		return new SecretKeySpec(data, "AES");
 	}
 

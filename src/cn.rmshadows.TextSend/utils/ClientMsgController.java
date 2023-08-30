@@ -56,8 +56,8 @@ public class ClientMsgController implements Runnable {
  *
  */
 class ClientMsgT implements Runnable {
-	private Message msg;
-	private ObjectOutputStream oos;
+	private final Message msg;
+	private final ObjectOutputStream oos;
 
 	public ClientMsgT(ObjectOutputStream out, Message m) {
 		this.msg = m;
@@ -103,8 +103,8 @@ class ClientMsgR implements Runnable {
 				if (m.getId() == ClientMsgController.SERVER_ID) {
 					if (get_id) {
 						// 获取ID
-						ClientMsgController.id = Integer.valueOf(m.getNotes());
-						System.out.println("客户端获取到ID：" + String.valueOf(ClientMsgController.id));
+						ClientMsgController.id = Integer.parseInt(m.getNotes());
+						System.out.println("客户端获取到ID：" + ClientMsgController.id);
 						get_id = false;
 					} else {
 						if (m.getNotes().equals(ClientMsgController.FB_MSG)) {
@@ -132,15 +132,14 @@ class ClientMsgR implements Runnable {
 	 * 将所给的加密msg对象转为解密后的string
 	 * 
 	 * @param m message类
-	 * @return
 	 */
 	private String decryptMsgToString(Message m) {
-		String str = "";
+		StringBuilder str = new StringBuilder();
 		for (String s : m.getData()) {
 			System.out.println("正在解密："+s);
-			str += AES_Util.decrypt(TextSendMain.AES_TOKEN, s);
+			str.append(AES_Util.decrypt(TextSendMain.AES_TOKEN, s));
 		}
-		return str;
+		return str.toString();
 	}
 
 	/**
@@ -173,8 +172,7 @@ class ClientMsgR implements Runnable {
 
 	/**
 	 * 复制收到的消息到剪贴板
-	 * 
-	 * @param text
+	 *
 	 */
 	private static void copyToClickboard(String text) {
 		String ret = "";

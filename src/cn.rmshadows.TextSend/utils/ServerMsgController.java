@@ -23,7 +23,7 @@ public class ServerMsgController implements Runnable {
 	final static int SERVER_ID = TextSendMain.SERVER_ID;
 	final static String AES_TOKEN = TextSendMain.AES_TOKEN;
 
-	private static List<Socket> socket_list = new LinkedList<Socket>();
+	private static List<Socket> socket_list = new LinkedList<>();
 	private static Socket socket = new Socket();
 	private static ObjectOutputStream oosStream;
 	private static ObjectInputStream oisStream;
@@ -40,7 +40,7 @@ public class ServerMsgController implements Runnable {
 		// 发送ID
 		ServerMsgController.sendMsgToClient(new Message(null, ServerMsgController.MSG_LEN,
 				ServerMsgController.SERVER_ID, String.valueOf(ServerMsgController.client_id)));
-		System.out.println(String.format("用户 %s (%d) 已上线。", socket.getInetAddress().getHostAddress(), client_id));
+		System.out.printf("用户 %s (%d) 已上线。%n", socket.getInetAddress().getHostAddress(), client_id);
 	}
 
 	@Override
@@ -74,9 +74,9 @@ public class ServerMsgController implements Runnable {
  */
 class ServerMsgT implements Runnable {
 	@SuppressWarnings("unused")
-	private Socket socket;
-	private Message msg;
-	private ObjectOutputStream oos;
+	private final Socket socket;
+	private final Message msg;
+	private final ObjectOutputStream oos;
 
 	public ServerMsgT(Socket s, ObjectOutputStream out, Message m) {
 		this.socket = s;
@@ -105,8 +105,8 @@ class ServerMsgT implements Runnable {
  */
 class ServerMsgR implements Runnable {
 	@SuppressWarnings("unused")
-	private Socket socket;
-	private int id;
+	private final Socket socket;
+	private final int id;
 	ObjectInputStream ois;
 
 	public ServerMsgR(Socket s, ObjectInputStream in, int id) {
@@ -151,15 +151,15 @@ class ServerMsgR implements Runnable {
 	 * 将所给的加密msg对象转为解密后的string
 	 * 
 	 * @param m message类
-	 * @return
+	 * @return 解密后的string
 	 */
 	private String decryptMsgToString(Message m) {
-		String str = "";
+		StringBuilder str = new StringBuilder();
 		for (String s : m.getData()) {
 			System.out.println("正在解密："+s);
-			str += AES_Util.decrypt(ServerMsgController.AES_TOKEN, s);
+			str.append(AES_Util.decrypt(ServerMsgController.AES_TOKEN, s));
 		}
-		return str;
+		return str.toString();
 	}
 
 	/**
@@ -197,7 +197,7 @@ class ServerMsgR implements Runnable {
 	/**
 	 * 复制收到的消息到剪贴板
 	 * 
-	 * @param text
+	 * @param text 消息
 	 */
 	private static void copyToClickboard(String text) {
 		String ret = "";

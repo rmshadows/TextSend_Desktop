@@ -6,7 +6,6 @@ import com.google.gson.stream.JsonToken;
 import com.google.gson.stream.JsonWriter;
 
 import java.io.IOException;
-import java.nio.file.LinkPermission;
 import java.util.LinkedList;
 
 // https://www.javadoc.io/static/com.google.code.gson/gson/2.10.1/com.google.gson/com/google/gson/TypeAdapter.html

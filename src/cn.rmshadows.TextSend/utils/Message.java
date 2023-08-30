@@ -9,16 +9,13 @@ import com.google.gson.GsonBuilder;
 
 /**
  * 消息类
- * 
+ * 加密的Msg类 解密请在App中实现，此类不包含解密的任何功能
  * @author ryan
- * @description:加密的Msg类 解密请在App中实现，此类不包含解密的任何功能
- * @param:
- * @return:
  */
 public class Message implements Serializable {
 	private static final long serialVersionUID = 6697595348360693967L;
 	// 储存数据
-	private LinkedList<String> encrypt_data = new LinkedList<String>();
+	private final LinkedList<String> encrypt_data = new LinkedList<>();
 	// ID
 	private int id;
 	// 留言
@@ -66,23 +63,20 @@ public class Message implements Serializable {
 		} else {
 			setNotes("");
 		}
-		if (text != null) {
-			// 需要截取的长度
-			int r_len = length;
-			int t_len = text.length();
-			int start = 0;
-			int end = 0;
-			// 000 000 000 0 3 10 0,3 3,6 6,9
-			while (t_len > r_len) {
-				end += r_len;
-				addData(encryptData(text.substring(start, end)));
-				start += r_len;
-				t_len -= r_len;
-			}
-			String e = text.substring(start);
-			if (e != "") {
-				addData(encryptData(e));
-			}
+		// 需要截取的长度
+		int t_len = text.length();
+		int start = 0;
+		int end = 0;
+		// 000 000 000 0 3 10 0,3 3,6 6,9
+		while (t_len > length) {
+			end += length;
+			addData(encryptData(text.substring(start, end)));
+			start += length;
+			t_len -= length;
+		}
+		String e = text.substring(start);
+		if (!e.equals("")) {
+			addData(encryptData(e));
 		}
 	}
 
@@ -100,8 +94,7 @@ public class Message implements Serializable {
 		Gson gson = new GsonBuilder()
 				.registerTypeAdapter(GsonMessage.class, new GsonMessageTypeAdapter())
 				.create();
-		String json = gson.toJson(new GsonMessage(String.valueOf(getId()), getData(), getNotes()));
-		return json;
+		return gson.toJson(new GsonMessage(String.valueOf(getId()), getData(), getNotes()));
 	}
 
 }

@@ -2,8 +2,6 @@ package application;
 
 import java.awt.Desktop;
 import java.awt.Font;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.io.File;
@@ -15,9 +13,9 @@ import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.Enumeration;
 import java.util.LinkedList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.JButton;
 import javax.swing.JComboBox;
@@ -27,11 +25,9 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 
-import utils.ClientMsgController;
-import utils.Message;
-import utils.QR_Util;
-import utils.ServerMsgController;
-import utils.SocketDeliver;
+import utils.*;
+
+import static java.util.concurrent.TimeUnit.*;
 
 /**
  * TextSend Ryan Yim Java Swing version 3.0
@@ -59,11 +55,13 @@ public class TextSendMain {
     // 客户端是否连接
     public static boolean client_connected = false;
     // 网卡IP地址
-    private static LinkedList<String> net_ip = new LinkedList<String>();
+    private static LinkedList<String> net_ip = new LinkedList<>();
     // 传输模式 1:JSON 2:Java Class Object(默认)
     public static int transmissionMode = 0;
     // 客户端最大链接数量
     public static int maxConnection = 1;
+    // 计时器停止信号
+    public static AtomicBoolean scheduleControl = new AtomicBoolean(false);
 
     // 下面是Swing界面组件
     private static JFrame frame;
@@ -74,6 +72,10 @@ public class TextSendMain {
     private static JScrollPane s;
     private static JTextArea ta;
     private static JComboBox<String> ips;
+
+    public static boolean getTest(){
+        return client_connected;
+    }
 
     /**
      * 客户端界面
@@ -102,7 +104,8 @@ public class TextSendMain {
         ta = new JTextArea();
 
         // 设置字体
-        ta.setFont(new Font(null, 0, 20));
+//        ta.setFont(new Font(null, 0, 20));
+        ta.setFont(new Font(null, Font.PLAIN, 20));
         // 设置自动换行
         ta.setLineWrap(true);
 
@@ -121,97 +124,93 @@ public class TextSendMain {
 
         panelForTextField.setBounds(0, 0, 390, 225);
         panelForButtons.setBounds(0, 225, 390, 48);
-//		panelForTextField.setBackground(new Color(0, 1, 0));
-//		panelForButtons.setBackground(new Color(1, 0, 0));
 
         frame.add(panelForTextField);
         frame.add(panelForButtons);
 
-        /**
-         * 连接按钮事件
+        /*
+          连接按钮事件
          */
-        start.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (is_running) {
-					// 如果客户端没有运行
+        start.addActionListener(e -> {
+            if (is_running) {
+                // 如果客户端没有运行
+                is_running = false;
+                client_connected = false;
+                start.setText("连接");
+                mode.setText("切换");
+                // 停止连接
+                try {
+                    client.close();
+                } catch (IOException e1) {
+                    e1.printStackTrace();
+                }
+            } else {
+                // 如果客户端已链接运行
+                is_running = true;
+                mode.setText("发送");
+                start.setText("断开");
+                // 连接
+                try {
+                    String IP_Addr;
+                    int port = 54300;
+                    // 如果有IP:端口
+                    if (ta.getText().contains(":")) {
+                        String[] connection = ta.getText().split(":");
+                        IP_Addr = connection[0];
+                        port = Integer.parseInt(connection[1]);
+                    } else {
+                        IP_Addr = ta.getText();
+                    }
+                    System.out.println("地址：" + IP_Addr + "       端口：" + port);
+                    client = new Socket(IP_Addr, port);
+                    client_connected = true;
+                    new Thread(new ClientMsgController(client)).start();
+                    scheduleControl.set(true);
+                    // 监视连接断开就恢复按钮状态
+                    new Thread(() -> {
+                        // 周期任务
+                        Runnable checkConnection = () -> {
+                            // 如果断开连接
+                            if(!client_connected){
+                                // 关闭连接
+                                try {
+                                    client.close();
+                                } catch (IOException e1) {
+                                    e1.printStackTrace();
+                                }
+                                is_running = false;
+                                start.setText("连接");
+                                mode.setText("切换");
+                                scheduleControl.set(false);
+                            }
+                        };
+                        // 运行周期任务，并在clientconnect未false时停止
+                        ScheduleTask scheduleTask = new ScheduleTask(checkConnection, 1, 1, scheduleControl, SECONDS);
+                        scheduleTask.startTask();
+                    }).start();
+                } catch (Exception e1) {
+                    e1.printStackTrace();
+                    // 连接失败
+                    System.out.println("客户端连接失败。");
                     is_running = false;
                     client_connected = false;
                     start.setText("连接");
                     mode.setText("切换");
-                    // 停止连接
-                    try {
-                        client.close();
-                    } catch (IOException e1) {
-                        e1.printStackTrace();
-                    }
-                } else {
-					// 如果客户端已链接运行
-                    is_running = true;
-                    mode.setText("发送");
-                    start.setText("断开");
-                    // 连接
-                    try {
-                        String IP_Addr = "";
-                        int port = 54300;
-						// 如果有IP:端口
-                        if (ta.getText().contains(":")) {
-                            String[] connection = ta.getText().split(":");
-                            IP_Addr = connection[0];
-                            port = Integer.valueOf(connection[1]);
-                        } else {
-                            IP_Addr = ta.getText();
-                        }
-                        System.out.println("地址：" + IP_Addr + "       端口：" + port);
-                        client = new Socket(IP_Addr, port);
-                        new Thread(new ClientMsgController(client)).start();
-                        // 监视连接断开就恢复按钮状态
-                        new Thread(() -> {
-							while (client_connected) {
-								try {
-									Thread.sleep(1000);
-								} catch (InterruptedException e12) {
-									e12.printStackTrace();
-								}
-							}
-							try {
-								client.close();
-							} catch (IOException e1) {
-								e1.printStackTrace();
-							}
-							is_running = false;
-							client_connected = false;
-							start.setText("连接");
-							mode.setText("切换");
-						}).start();
-                        client_connected = true;
-                    } catch (Exception e1) {
-                        e1.printStackTrace();
-                        // 连接失败
-                        System.out.println("客户端连接失败。");
-                        is_running = false;
-                        client_connected = false;
-                        start.setText("连接");
-                        mode.setText("切换");
-                    }
                 }
             }
         });
 
-        /**
+        /*
          * 发送按钮事件
          */
-        mode.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (is_running) {
-                    ClientMsgController
-                            .sendMsgToServer(new Message(ta.getText(), MSG_LEN, ClientMsgController.id, AES_TOKEN));
-                } else {
-                    frame.setVisible(false);
-                    is_server = true;
-                    textSendServer();
-                }
+        mode.addActionListener(e -> {
+            if (is_running) {
+                ClientMsgController
+                        .sendMsgToServer(new Message(ta.getText(), MSG_LEN, ClientMsgController.id, AES_TOKEN));
+            } else {
+                frame.setVisible(false);
+                is_server = true;
+                textSendServer();
             }
         });
         frame.setResizable(false);
@@ -233,7 +232,7 @@ public class TextSendMain {
         mode = new JButton();
         s = new JScrollPane();
         ta = new JTextArea();
-        ips = new JComboBox<String>();
+        ips = new JComboBox<>();
 
         // 添加IP
         for (String ip : net_ip) {
@@ -282,7 +281,7 @@ public class TextSendMain {
         frame.add(panelForTextField);
         frame.add(panelForButtons);
 
-        /**
+        /*
          * 启动按钮时事件
          */
         start.addMouseListener(new MouseListener() {
@@ -290,7 +289,7 @@ public class TextSendMain {
             public void mouseClicked(MouseEvent e) {
                 // 鼠标左键 启动浏览器生成二维码
                 if (e.getButton() == 1) {
-					maxConnection = 1;
+                    maxConnection = 1;
                     if (is_running) {
                         panelForTextField.remove(s);
                         panelForTextField.add(ips);
@@ -312,17 +311,17 @@ public class TextSendMain {
                         // 转义空格
                         qr_url = qr_url.replace(" ", "%20");
                         browser(String.format("file:///%s", qr_url));
-                        server(PORT);
+                        server();
                         is_running = true;
                         mode.setText("发送");
                         start.setText("停止");
                     }
                 } else {// 不启动浏览器 不生成二维码
                     if (e.getButton() == 2) {
-						maxConnection = 7;
-                    }else {
-						maxConnection = 1;
-					}
+                        maxConnection = 7;
+                    } else {
+                        maxConnection = 1;
+                    }
                     // 鼠标中间支持7个客户端
                     if (is_running) {
                         panelForTextField.remove(s);
@@ -333,7 +332,7 @@ public class TextSendMain {
                     } else {
                         panelForTextField.remove(ips);
                         panelForTextField.add(s);
-                        server(PORT);
+                        server();
                         is_running = true;
                         start.setText("停止");
                         mode.setText("发送");
@@ -358,21 +357,18 @@ public class TextSendMain {
             }
         });
 
-        /**
+        /*
          * 发送按钮事件
          */
-        mode.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (is_running) {
-                    Message m = new Message(ta.getText(), MSG_LEN, SERVER_ID, null);
-                    System.out.println(m.getJSON());
-                    ServerMsgController.sendMsgToClient(m);
-                } else {
-                    frame.setVisible(false);
-                    is_server = false;
-                    textSendClient();
-                }
+        mode.addActionListener(e -> {
+            if (is_running) {
+                Message m = new Message(ta.getText(), MSG_LEN, SERVER_ID, null);
+                System.out.println(m.getJSON());
+                ServerMsgController.sendMsgToClient(m);
+            } else {
+                frame.setVisible(false);
+                is_server = false;
+                textSendClient();
             }
         });
         frame.setAlwaysOnTop(true);
@@ -383,33 +379,23 @@ public class TextSendMain {
 
     /**
      * main方法
-     *
-     * @param args
-     * @throws SocketException
      */
     public static void main(String[] args) throws SocketException {
         setPort();
         Prefer_Addr = getIP() + ":" + PORT;
-        javax.swing.SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                textSendServer();
-            }
-        });
+        // lambda 可被替换为方法引用 javax.swing.SwingUtilities.invokeLater(() -> textSendServer());
+        javax.swing.SwingUtilities.invokeLater(TextSendMain::textSendServer);
     }
 
     /**
      * 启动服务端
-     *
-     * @param port String
      */
-    private static void server(String port) {
+    private static void server() {
         new Thread(new SocketDeliver()).start();
     }
 
     /**
      * 清空文本框中的文字
-     *
-     * @return
      */
     public static void cleanText() {
         ta.setText("");
@@ -417,8 +403,6 @@ public class TextSendMain {
 
     /**
      * 打印网卡IP并返回可能的局域网IP
-     *
-     * @throws SocketException
      */
     public static String getIP() throws SocketException {// get all local ips
         LinkedList<String> ip_addr = new LinkedList<>();
@@ -456,13 +440,13 @@ public class TextSendMain {
 
         for (String ip : ip_addr) {
             try {
-                if (ip.substring(0, 7).equals("192.168")) {
+                if (ip.startsWith("192.168")) {
                     prefer_ip = ip;
                     break;
-                } else if (ip.substring(0, 4).equals("172.")) {
+                } else if (ip.startsWith("172.")) {
                     prefer_ip = ip;
                     find172 = true;
-                } else if (ip.substring(0, 3).equals("10.")) {
+                } else if (ip.startsWith("10.")) {
                     if (!find172) {
                         prefer_ip = ip;
                     }
@@ -474,10 +458,12 @@ public class TextSendMain {
 
         System.out.println("<--没有第" + n + "组网卡，如果以上结果没有显示出你所在局域网的IP地址。请手动查看您的IPv4地址谢谢-->\n");
         System.out.println("请在您的TextSend安卓客户端中输入手机与电脑同在的局域网的IPv4地址(不出问题的话上面应该有你需要的IP)。");
-        if (prefer_ip.substring(0, 7).equals("192.168")) {
-            System.out.println(String.format("猜测您当前的局域网IP是：%s ，具体请根据实际情况进行选择。", prefer_ip));
-        } else {
-            System.out.println(String.format("未能猜测到您当前的局域网IP，将使用：%s 作为启动二维码地址！具体可将实际IP填入文本框后启动!", prefer_ip));
+        if (prefer_ip != null) {
+            if (prefer_ip.startsWith("192.168")) {
+                System.out.printf("猜测您当前的局域网IP是：%s ，具体请根据实际情况进行选择。%n", prefer_ip);
+            } else {
+                System.out.printf("未能猜测到您当前的局域网IP，将使用：%s 作为启动二维码地址！具体可将实际IP填入文本框后启动!%n", prefer_ip);
+            }
         }
 
         try {
@@ -498,9 +484,10 @@ public class TextSendMain {
         Thread th = new Thread(g);
         th.start();
         try {
-            th.join(8000);
-        } catch (InterruptedException e1) {
-            e1.printStackTrace();
+            // 超时10秒
+            th.join(10000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
             System.exit(1);
         } finally {
             th.interrupt();
@@ -510,8 +497,9 @@ public class TextSendMain {
     }
 
     /**
+     * 使用默认浏览器打开
+     *
      * @param url 要打开的网址
-     * @title 使用默认浏览器打开
      */
     private static void browser(String url) {
         System.out.println("Log: 尝试用浏览器显示二维码...");
@@ -521,10 +509,6 @@ public class TextSendMain {
             try {
                 uri = new URI(url);
                 desktop.browse(uri);
-            } catch (URISyntaxException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -533,11 +517,9 @@ public class TextSendMain {
 
     /**
      * 返回端口
-     *
-     * @return
      */
     public static int getPort() {
-        return Integer.valueOf(PORT);
+        return Integer.parseInt(PORT);
     }
 }
 
@@ -559,24 +541,22 @@ class GetPort implements Runnable {
 
     @Override
     public void run() {
-        String po = null;
+        String po;
         boolean showing = true;
         while (showing) {
             try {
                 po = JOptionPane.showInputDialog("请选择服务端口，默认54300端口(未确认将视为退出程序)");
-                if (po.equals(null)) {
+                if (po == null) {
                     setPort("54300");
                     showing = false;
                 } else if (po.equals("")) {
                     setPort("54300");
                     showing = false;
                 } else {
-                    System.out.println("asdsa");
                     try {
                         Integer.valueOf(po);
                     } catch (NumberFormatException e) {
-                        JOptionPane.showMessageDialog(null, "请输入数字!", "错误", 1);
-                        showing = true;
+                        JOptionPane.showMessageDialog(null, "请输入数字!", "错误", JOptionPane.INFORMATION_MESSAGE);
                         continue;
                     }
                     setPort(po);
