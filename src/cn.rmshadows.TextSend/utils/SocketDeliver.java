@@ -4,13 +4,13 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import application.TextSendMain;
 
@@ -20,11 +20,15 @@ import application.TextSendMain;
  * @author jessie
  */
 public class SocketDeliver implements Runnable {
+    // Socket ID Mode
     public static List<Socket> socket_list = Collections.synchronizedList(new ArrayList<>());
     // 创建一个线程池
     private final ExecutorService executorService = Executors.newFixedThreadPool(10);
     private static boolean started = false;
     static ServerSocket server;
+
+    public static AtomicBoolean scheduleControl = new AtomicBoolean(false);
+    public static AtomicBoolean socketDeliveryControl = new AtomicBoolean(false);
 
     /**
      * 停止分发socket，不会停止原有链接
@@ -50,35 +54,42 @@ public class SocketDeliver implements Runnable {
     public void run() {
         System.err.println("启动电脑端Textsend服务...");
         try {
-            server = new ServerSocket(TextSendMain.getPort(), 1);
+            server = new ServerSocket(TextSendMain.getServerListenPort(), 1);
             started = true;
+            scheduleControl.set(true);
             // 监听是否停止
             new Thread(() -> {
-                while (TextSendMain.is_running) {
+                Runnable Task = ()->{
+                    // 如果服务停止 Socket停止
+                    if(!TextSendMain.isServerRunning()){
+                        stopSocketDeliver();
+                        scheduleControl.set(false);
+                    }
+                };
+                new ScheduleTask(Task, 1,1, scheduleControl, TimeUnit.SECONDS).startTask();
+            }).start();
+            socketDeliveryControl.set(true);
+            Runnable SocketDelivery = () -> {
+                // 分发socket
+                if(socket_list.size() < TextSendMain.maxConnection){
+                    final Socket socket;
                     try {
-                        Thread.sleep(1000);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                        System.out.println("Socket分发中......");
+                        socket = server.accept();
+                        socket_list.add(socket);
+                        executorService.execute(new Thread(new ServerMsgController(socket, socket_list)));
+                    } catch (IOException e) {
+                        socketDeliveryControl.set(false);
+                        throw new RuntimeException(e);
                     }
                 }
-                stopSocketDeliver();
-            }).start();
-            // 分发socket
-            while (true) {
-                // 如果有链接，不继续分发
-                while (socket_list.size() >= TextSendMain.maxConnection) {
-                    Thread.sleep(1000);
-                }
-                System.out.println("Socket分发中。。。");
-                final Socket socket = server.accept();
-                socket_list.add(socket);
-                executorService.execute(new Thread(new ServerMsgController(socket, socket_list)));
-            }
+            };
+            new ScheduleTask(SocketDelivery, 1, 1, socketDeliveryControl, 500, 800, TimeUnit.SECONDS).startTask();
         } catch (BindException e) {
+            TextSendMain.stopServer();
             System.out.println("Port Already in use.");
-        } catch (SocketException e) {
-            System.out.println(e);
         } catch (Exception e) {
+            TextSendMain.stopServer();
             e.printStackTrace();
         } finally {
             System.out.println("Log: Socket Closing...");

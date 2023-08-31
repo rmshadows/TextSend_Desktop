@@ -73,7 +73,7 @@ class ClientMsgT implements Runnable {
 			oos.flush();
 		} catch (Exception e) {
 			e.printStackTrace();
-			TextSendMain.client_connected = false;
+			TextSendMain.isClientConnected = false;
 		}
 	}
 }
@@ -110,7 +110,7 @@ class ClientMsgR implements Runnable {
 						if (m.getNotes().equals(ClientMsgController.FB_MSG)) {
 							// 处理反馈信息
 							System.out.println("服务器收到了消息。");
-							TextSendMain.cleanText();
+							TextSendMain.cleanTextArea();
 						} else {
 							String text = decryptMsgToString(m);
 							// 反馈服务器
@@ -124,7 +124,7 @@ class ClientMsgR implements Runnable {
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
-			TextSendMain.client_connected = false;
+			TextSendMain.isClientConnected = false;
 		}
 	}
 

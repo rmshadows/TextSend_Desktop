@@ -127,7 +127,7 @@ class ServerMsgR implements Runnable {
 					if (m.getNotes().equals(ServerMsgController.FB_MSG)) {
 						// 说明客户端收到了消息，清空文本框。
 						System.out.println("客户端收到了信息。");
-						TextSendMain.cleanText();
+						TextSendMain.cleanTextArea();
 					} else {
 						// 消息处理
 						String msg = decryptMsgToString(m);
