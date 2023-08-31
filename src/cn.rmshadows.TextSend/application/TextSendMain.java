@@ -1,5 +1,6 @@
 package application;
 
+import ScheduleTask.ScheduleTask;
 import utils.*;
 
 import javax.swing.*;
@@ -16,13 +17,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
- * TextSend Ryan Yim Java Swing version 3.0
+ * TextSend Ryan Yim Java Swing
  */
 public class TextSendMain {
     // TODO:等客户端写好了，在写服务端多开模式
     // Server
     // 服务器消息自带的ID
-    final public static int SERVER_ID = -200;
+    final public static String SERVER_ID = "-200";
     // 服务器成功接收的反馈信息
     final public static String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
     // 服务运行的端口号
@@ -53,6 +54,8 @@ public class TextSendMain {
     private static LinkedList<String> netIps = new LinkedList<>();
     // 传输模式 1:JSON 2:Java Class Object(默认)
     public static int transmissionMode = 0;
+    // 连接过程 -1:init 0:get id from server 1:get mode from server 2:get support mode from client
+    public static int connectionStat = -1;
 
     // 下面是Swing界面组件
     private static JFrame frame;
@@ -396,11 +399,12 @@ public class TextSendMain {
      */
     private static void sendMessage() {
         if (isServerMode) {
-            Message m = new Message(textArea.getText(), MSG_LEN, SERVER_ID, null);
-            System.out.println(m.getJSON());
+            Message m = new Message(SERVER_ID, textArea.getText(), MSG_LEN, null);
+            // TODO
+            System.out.println(m);
             ServerMsgController.sendMsgToClient(m);
         } else {
-            ClientMsgController.sendMsgToServer(new Message(textArea.getText(), MSG_LEN, ClientMsgController.id, AES_TOKEN));
+            ClientMsgController.sendMsgToServer(new Message(ClientMsgController.clientId, textArea.getText(), MSG_LEN, null));
         }
     }
 

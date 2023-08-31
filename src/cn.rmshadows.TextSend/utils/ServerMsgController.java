@@ -20,26 +20,26 @@ import application.TextSendMain;
 public class ServerMsgController implements Runnable {
 	final static String FB_MSG = TextSendMain.FB_MSG;
 	final static int MSG_LEN = TextSendMain.MSG_LEN;
-	final static int SERVER_ID = TextSendMain.SERVER_ID;
+	final static String SERVER_ID = TextSendMain.SERVER_ID;
 	final static String AES_TOKEN = TextSendMain.AES_TOKEN;
 
 	private static List<Socket> socket_list = new LinkedList<>();
 	private static Socket socket = new Socket();
 	private static ObjectOutputStream oosStream;
 	private static ObjectInputStream oisStream;
-	private static int client_id;
+	private static String client_id;
 
 	public ServerMsgController(Socket socket, List<Socket> socket_list) throws IOException {
 		ServerMsgController.socket = socket;
 		ServerMsgController.socket_list = socket_list;
-		ServerMsgController.client_id = socket.hashCode();
+		ServerMsgController.client_id = String.valueOf(socket.hashCode());
 
 		// 下面的流是唯一的，否则socket报错
 		oosStream = new ObjectOutputStream(socket.getOutputStream());
 		oisStream = new ObjectInputStream(socket.getInputStream());
 		// 发送ID
-		ServerMsgController.sendMsgToClient(new Message(null, ServerMsgController.MSG_LEN,
-				ServerMsgController.SERVER_ID, String.valueOf(ServerMsgController.client_id)));
+		ServerMsgController.sendMsgToClient(new Message(ServerMsgController.SERVER_ID, null,
+				ServerMsgController.MSG_LEN, String.valueOf(ServerMsgController.client_id)));
 		System.out.printf("用户 %s (%d) 已上线。%n", socket.getInetAddress().getHostAddress(), client_id);
 	}
 
@@ -106,10 +106,10 @@ class ServerMsgT implements Runnable {
 class ServerMsgR implements Runnable {
 	@SuppressWarnings("unused")
 	private final Socket socket;
-	private final int id;
+	private final String id;
 	ObjectInputStream ois;
 
-	public ServerMsgR(Socket s, ObjectInputStream in, int id) {
+	public ServerMsgR(Socket s, ObjectInputStream in, String id) {
 		this.socket = s;
 		this.ois = in;
 		this.id = id;
@@ -157,7 +157,7 @@ class ServerMsgR implements Runnable {
 		StringBuilder str = new StringBuilder();
 		for (String s : m.getData()) {
 			System.out.println("正在解密："+s);
-			str.append(AES_Util.decrypt(ServerMsgController.AES_TOKEN, s));
+			str.append(MessageCrypto.tsDecryptString(s));
 		}
 		return str.toString();
 	}
@@ -190,8 +190,8 @@ class ServerMsgR implements Runnable {
 	 */
 	private static void msgFeedBack() {
 		System.out.println("发送反馈信息到客户端。");
-		ServerMsgController.sendMsgToClient(new Message(null, ServerMsgController.MSG_LEN,
-				ServerMsgController.SERVER_ID, ServerMsgController.FB_MSG));
+		ServerMsgController.sendMsgToClient(new Message(ServerMsgController.SERVER_ID,
+				null, ServerMsgController.MSG_LEN, ServerMsgController.FB_MSG));
 	}
 
 	/**
