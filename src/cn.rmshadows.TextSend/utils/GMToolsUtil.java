@@ -27,8 +27,7 @@ public class GMToolsUtil {
 
     /**
      * JSON转GsonMessage对象 (未解密)
-     * @param json
-     * @return
+     * @param json json
      */
     public static GsonMessage JSONtoGsonMessage(String json){
         Gson gson = new GsonBuilder()

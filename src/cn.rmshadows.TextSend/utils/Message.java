@@ -3,11 +3,6 @@ package utils;
 import java.io.Serializable;
 import java.util.LinkedList;
 
-import Datetime_Utils.Datetime_Utils;
-import application.TextSendMain;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-
 import static utils.MessageCrypto.tsEncryptString;
 
 /**

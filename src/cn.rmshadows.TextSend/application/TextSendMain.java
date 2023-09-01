@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.net.*;
 import java.util.Enumeration;
 import java.util.LinkedList;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -20,7 +21,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * TextSend Ryan Yim Java Swing
  */
 public class TextSendMain {
-    // TODO:等客户端写好了，在写服务端多开模式
+    final public static String VERSION = "4.0.1";
     // Server
     // 服务器消息自带的ID
     final public static String SERVER_ID = "-200";
@@ -52,10 +53,6 @@ public class TextSendMain {
     private static boolean isServerMode = true;
     // 网卡IP地址
     private static LinkedList<String> netIps = new LinkedList<>();
-    // 传输模式 1:JSON 2:Java Class Object(默认)
-    public static int transmissionMode = 0;
-    // 连接过程 -1:init 0:get id from server 1:get mode from server 2:get support mode from client
-    public static int connectionStat = -1;
 
     // 下面是Swing界面组件
     private static JFrame frame;
@@ -98,7 +95,7 @@ public class TextSendMain {
         textArea = new JTextArea();
 
         // frame
-        frame.setTitle("Text Send PC Client");
+        frame.setTitle("Text Send PC Client - " + VERSION);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setIconImage(null);
         frame.setSize(400, 300);
@@ -187,7 +184,7 @@ public class TextSendMain {
             clientSocket.connect(new InetSocketAddress(serverIpAddr, port), 5000);
             // 如果连接成功
             isClientConnected = true;
-            new Thread(new ClientMsgController(clientSocket)).start();
+            new Thread(new ClientMessageController(clientSocket)).start();
             // 开始监视连接状况
             scheduleControl.set(true);
             // 监视连接断开就恢复按钮状态
@@ -392,6 +389,7 @@ public class TextSendMain {
         buttonStart.setText("启动");
         buttonMode.setText("切换");
         setServerRunning(false);
+        SocketDeliver.stopSocketDeliver();
     }
 
     /**
@@ -400,11 +398,10 @@ public class TextSendMain {
     private static void sendMessage() {
         if (isServerMode) {
             Message m = new Message(SERVER_ID, textArea.getText(), MSG_LEN, null);
-            // TODO
-            System.out.println(m);
-            ServerMsgController.sendMsgToClient(m);
+            // 这个是发送给所有客户端
+            SocketDeliver.sendMessageToAllClients(m);
         } else {
-            ClientMsgController.sendMsgToServer(new Message(ClientMsgController.clientId, textArea.getText(), MSG_LEN, null));
+            ClientMessageController.sendMessageToServer(new Message(ClientMessageController.clientId, textArea.getText(), MSG_LEN, null));
         }
     }
 
@@ -428,7 +425,9 @@ public class TextSendMain {
      * 清空文本框中的文字
      */
     public static void cleanTextArea() {
-        textArea.setText("");
+        if(!Objects.equals(textArea.getText(), "")){
+            textArea.setText("");
+        }
     }
 
     /**

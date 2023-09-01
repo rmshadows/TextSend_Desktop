@@ -1,6 +1,6 @@
 package utils;
 
-
+import java.io.Serializable;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
@@ -16,7 +16,8 @@ import java.util.LinkedList;
  * 解密L：
  * GsonMessage->GsonMessage（解密所有参数到明文，包括Data）
  */
-public class GsonMessage {
+public class GsonMessage implements Serializable {
+    private static final long serialVersionUID = 6697595348360693976L;
     private final String id;
     private final LinkedList<String> data;
     private final String notes;
