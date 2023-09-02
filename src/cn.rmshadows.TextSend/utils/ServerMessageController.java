@@ -1,5 +1,6 @@
 package utils;
 
+import ScheduleTask.ScheduleTask;
 import application.TextSendMain;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -35,7 +36,7 @@ public class ServerMessageController implements Runnable {
     // 连接状态 -1 未连接 0:连接 分配ID中 1:分配完ID 分配模式中 2:正常通信 -2:断开连接
     private int connectionStat = -1;
     // 客户端IP
-    private final String clientIP;
+    public final String clientIP;
 
     public Socket getSocket() {
         return socket;
@@ -126,6 +127,7 @@ public class ServerMessageController implements Runnable {
         Thread receiver = new Thread(new ServerMessageReceiver(this));
         receiver.start();
         // 发送客户端ID给客户端
+        System.out.println("ID -> " + clientIP + "(" + getClientId() + ")");
         sendMessage(new Message(SERVER_ID, null, MSG_LEN, getClientId()));
         try {
             // 等待监听器结束
@@ -176,7 +178,7 @@ class ServerMessageTransmitter implements Runnable {
             GsonMessage egm = GMToolsUtil.MessageToEncrypptedGsonMessage(msg);
             if (transmitterTransmissionMode == 0 || transmitterTransmissionMode == 1) {
                 // JSON传输
-                System.out.println("发送加密后的数据(JSON)：" + egm);
+                System.out.println("Send to " + serverMessageController.clientIP + " (JSON)\n");
                 // 将GSM对象读取成文字传输
                 int read;
                 byte[] buf = new byte[1024];
@@ -188,7 +190,7 @@ class ServerMessageTransmitter implements Runnable {
                 // 会关闭输入流（GSM对象读取完了就关闭），不会关闭输出流(会关闭Socket)
                 bufferedInputStream.close();
             } else if (transmitterTransmissionMode == 2) {
-                System.out.println("发送加密后的数据(Object)：" + egm);
+                System.out.println("Send to " + serverMessageController.clientIP + " (Object)\n");
                 // 已经序列化GSM
                 objectOutputStream.writeObject(egm);
                 objectOutputStream.flush();
@@ -251,7 +253,7 @@ class ServerMessageReceiver implements Runnable {
                     chunk.append(read);
                     // 读取到JSON末尾
                     if (read.endsWith("}")) {
-                        System.out.println("Receive obj: " + chunk);
+                        System.out.println("Received chunk: " + chunk);
                         // 这里开始处理
                         GsonMessage egm = GMToolsUtil.JSONtoGsonMessage(String.valueOf(chunk));
                         // 解密后的信息
@@ -276,6 +278,9 @@ class ServerMessageReceiver implements Runnable {
                                     serverMessageController.sendMessage(new Message(TextSendMain.SERVER_ID, null, TextSendMain.MSG_LEN, allocationMode));
                                     // 收到客户端发送的模式清单，说明客户端接受了ID请求，状态直接0变为2。 注意：直接进入接受传输模式交流
                                     serverMessageController.setConnectionStat(2);
+                                    System.err.printf("用户 %s (%s) 已上线。%n",
+                                            serverMessageController.clientIP,
+                                            serverMessageController.getClientId());
                                 } else {
                                     System.out.println("Drop id message (on get support mode :support mode error.) : " + cgm);
                                 }
@@ -297,7 +302,8 @@ class ServerMessageReceiver implements Runnable {
                                         }
                                         // 反馈客户端 注意：仅代表服务端收到信息
                                         serverMessageController.messageFeedBack();
-                                        System.out.println("收到客户端的消息：" + text);
+                                        System.out.println("Received: " + serverMessageController.clientIP
+                                                +"("+ serverMessageController.getClientId() + ") <- " + text);
                                         copyToClickboard(text.toString());
                                         pasteReceivedMessage();
                                     }
@@ -335,7 +341,8 @@ class ServerMessageReceiver implements Runnable {
                                 }
                                 // 反馈服务器
                                 serverMessageController.messageFeedBack();
-                                System.out.println("收到客户端的消息：" + text);
+                                System.out.println("Received: " + serverMessageController.clientIP
+                                        +"("+ serverMessageController.getClientId() + ") <- " + text);
                                 copyToClickboard(text.toString());
                                 pasteReceivedMessage();
                             }

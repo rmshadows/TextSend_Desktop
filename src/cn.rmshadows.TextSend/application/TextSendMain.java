@@ -21,7 +21,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * TextSend Ryan Yim Java Swing
  */
 public class TextSendMain {
-    final public static String VERSION = "4.0.1";
+    final public static String VERSION = "4.0.2";
     // Server
     // 服务器消息自带的ID
     final public static String SERVER_ID = "-200";
@@ -378,6 +378,14 @@ public class TextSendMain {
             browserOpenUrl(String.format("file:///%s", qr_url));
         }
         new Thread(new SocketDeliver()).start();
+    }
+
+    /**
+     * 外部设置按钮文字
+     * @param count 值
+     */
+    public static void setClientCount(int count){
+        buttonMode.setText("("+count+")");
     }
 
     /**

@@ -1,5 +1,8 @@
 package utils;
 
+import ScheduleTask.ScheduleTask;
+import application.TextSendMain;
+
 import java.io.IOException;
 import java.net.BindException;
 import java.net.ServerSocket;
@@ -11,9 +14,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import ScheduleTask.ScheduleTask;
-
-import application.TextSendMain;
 
 /**
  * 启动一个服务器端口，监听。 分发Socket
@@ -36,11 +36,10 @@ public class SocketDeliver implements Runnable {
 
     /**
      * 服务端会把消息广播给所有客户端
-     *
      */
     public static void sendMessageToAllClients(Message m) {
-        for (ServerMessageController s: SocketDeliver.socketList) {
-            new Thread(new ServerMessageTransmitter(s , m)).start();
+        for (ServerMessageController s : SocketDeliver.socketList) {
+            new Thread(new ServerMessageTransmitter(s, m)).start();
         }
     }
 
@@ -55,7 +54,7 @@ public class SocketDeliver implements Runnable {
             e.printStackTrace();
         }
         // 关闭所有客户端Socket)(现有连接)
-        for (ServerMessageController s: socketList) {
+        for (ServerMessageController s : socketList) {
             try {
                 s.getSocket().close();
             } catch (Exception e) {
@@ -80,20 +79,26 @@ public class SocketDeliver implements Runnable {
             // 监听服务是否停止
             scheduleControl.set(true); // 开启定时器
             new Thread(() -> {
-                Runnable Task = ()->{
+                Runnable Task = () -> {
                     // 如果服务停止 Socket停止
-                    if(!TextSendMain.isServerRunning()){
+                    if (!TextSendMain.isServerRunning()) {
                         stopSocketDeliver();
                         scheduleControl.set(false);
+                    } else {
+                        // 如果服务端开启多连接 显示连接数
+                        if(TextSendMain.maxConnection != 1){
+                            int clientCount = socketList.size();
+                            TextSendMain.setClientCount(clientCount);
+                        }
                     }
                 };
-                new ScheduleTask(Task, 1,1, scheduleControl, TimeUnit.SECONDS).startTask();
+                new ScheduleTask(Task, 1, 1, scheduleControl, TimeUnit.SECONDS).startTask();
             }).start();
             // 控制Socket是否继续分发
             socketDeliveryControl.set(true);
             Runnable SocketDeliveryTask = () -> {
                 // 分发socket
-                if(socketList.size() < TextSendMain.maxConnection){
+                if (socketList.size() < TextSendMain.maxConnection) {
                     final Socket socket;
                     try {
                         System.out.println("Socket is delivering......");
@@ -101,6 +106,21 @@ public class SocketDeliver implements Runnable {
                         ServerMessageController client = new ServerMessageController(socket);
                         // 断开后删除列表的方法写在ServerMessageController
                         socketList.add(client);
+                        // 启动定时任务 如果连接成功则取消运行 不成功就断开Socket
+                        Runnable connectTimeout = () -> {
+                            try {
+                                Thread.sleep(8000);
+                                if (client.getConnectionStat() != 2) {
+                                    client.closeCurrentClientSocket();
+                                    System.err.println("连接超时，断开客户端。");
+                                } else {
+                                    System.out.println("检测到客户端连接成功");
+                                }
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                        };
+                        new Thread(connectTimeout).start();
                         executorService.execute(new Thread(client));
                     } catch (IOException e) {
                         socketDeliveryControl.set(false);

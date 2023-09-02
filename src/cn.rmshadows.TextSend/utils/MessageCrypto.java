@@ -16,7 +16,7 @@ public class MessageCrypto {
      * @param string 字符串
      */
     public static String tsEncryptString(String string) {
-        AES_Utils.AES_CFB cfb = new AES_Utils.AES_CFB(TextSendMain.AES_TOKEN, "", 32);
+        AES_Utils.AES_CFB cfb = new AES_Utils.AES_CFB(TextSendMain.AES_TOKEN, "ES", 32);
         return cfb.encrypt(string);
     }
 
@@ -26,7 +26,7 @@ public class MessageCrypto {
      * @param string 字符串
      */
     public static String tsDecryptString(String string) {
-        AES_Utils.AES_CFB cfb = new AES_Utils.AES_CFB(TextSendMain.AES_TOKEN, "", 32);
+        AES_Utils.AES_CFB cfb = new AES_Utils.AES_CFB(TextSendMain.AES_TOKEN, "ES", 32);
         return cfb.decrypt(string);
     }
 
@@ -43,9 +43,9 @@ public class MessageCrypto {
             String notes = String.format("%s%s%s", clearGsonMessage.getNotes(), MSG_SPLITOR, randomInt());
             notes = tsEncryptString(notes);
             GsonMessage encryptedGm = new GsonMessage(id, data, notes);
-//            System.out.print(clearGsonMessage);
-//            System.out.print("  ->  ");
-//            System.out.println(encryptedGm);
+            System.out.print(clearGsonMessage);
+            System.out.print("  ->  ");
+            System.out.println(encryptedGm);
             return encryptedGm;
         } catch (Exception e) {
             e.printStackTrace();

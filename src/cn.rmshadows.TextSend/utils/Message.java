@@ -54,7 +54,7 @@ public class Message implements Serializable {
 		if (text == null) {
 			text = "";
 		}else {
-			System.out.println("封装字符串：" + text);
+			System.out.println("Message encapsulation：" + text);
 		}
 		setId(id);
 		if (notes != null) {
