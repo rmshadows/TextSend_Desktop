@@ -8,6 +8,11 @@ repositories {
     mavenCentral()
 }
 
+//https://www.linshuaishuai.com/article/p/20201213927578/
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
 dependencies {
     // https://mvnrepository.com/artifact/com.google.zxing/javase
     implementation group: 'com.google.zxing', name: 'javase', version: '3.5.1'
