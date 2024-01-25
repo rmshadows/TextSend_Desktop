@@ -318,7 +318,8 @@ class ServerMessageReceiver implements Runnable {
                     }
                 }
                 System.out.println("Socket has ended.");
-                ClientMessageController.connectionStat = -1;
+//                ClientMessageController.connectionStat = -1;
+                serverMessageController.setConnectionStat(-1);
                 TextSendMain.isClientConnected = false;
             } else if (receiverTransmissionMode == 2) {
                 // 传输对象 传输对象的时候已经进入正常通信了
