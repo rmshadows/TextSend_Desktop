@@ -4,6 +4,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAdjusters;
 import java.util.LinkedList;
+import java.util.Objects;
 
 /**
  * 时间日期工具类
@@ -214,11 +215,7 @@ public class Datetime_Utils {
 	 * @return DateTimeFormatter
 	 */
 	public static DateTimeFormatter getFormatter(String format){
-		if (format == null){
-			return DateTimeFormatter.ofPattern("yyyy-MM-dd");
-		}else {
-			return DateTimeFormatter.ofPattern(format);
-		}
+		return DateTimeFormatter.ofPattern(Objects.requireNonNullElse(format, "yyyy-MM-dd"));
 	}
 
 	/**

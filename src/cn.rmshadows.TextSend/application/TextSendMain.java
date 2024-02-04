@@ -1,7 +1,12 @@
 package application;
 
+import IpAddress.IpAddressFilter;
+import IpAddress.Pair;
 import ScheduleTask.ScheduleTask;
-import utils.*;
+import utils.ClientMessageController;
+import utils.Message;
+import utils.QR_Util;
+import utils.SocketDeliver;
 
 import javax.swing.*;
 import java.awt.*;
@@ -21,7 +26,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * TextSend Ryan Yim Java Swing
  */
 public class TextSendMain {
-    final public static String VERSION = "4.0.2";
+    final public static String VERSION = "4.0.4";
     // Server
     // 服务器消息自带的ID
     final public static String SERVER_ID = "-200";
@@ -167,15 +172,26 @@ public class TextSendMain {
         buttonStart.setText("断开");
         // 连接
         try {
-            String serverIpAddr;
+            String serverIpAddr = "";
             int port = 54300;
-            // 如果有IP:端口
-            if (textArea.getText().contains(":")) {
-                String[] connection = textArea.getText().split(":");
-                serverIpAddr = connection[0];
-                port = Integer.parseInt(connection[1]);
-            } else {
+            if (IpAddressFilter.getIpType(textArea.getText()) == 1) {
                 serverIpAddr = textArea.getText();
+            } else if (Objects.equals(textArea.getText(), "")) {
+                serverIpAddr = "127.0.0.1";
+            } else if (IpAddressFilter.getIpType(textArea.getText()) == 2) {
+                serverIpAddr = textArea.getText();
+            } else if (IpAddressFilter.getIpType(textArea.getText()) == 3) {
+                Pair<String, String> p = IpAddressFilter.splitIpAndPort(textArea.getText());
+                if (p != null) {
+                    serverIpAddr = p.getFirst();
+                    port = Integer.parseInt(p.getSecond());
+                }
+            } else if (IpAddressFilter.getIpType(textArea.getText()) == 4) {
+                Pair<String, String> p = IpAddressFilter.splitIpAndPort(textArea.getText());
+                if (p != null) {
+                    serverIpAddr = p.getFirst();
+                    port = Integer.parseInt(p.getSecond());
+                }
             }
             System.out.println("地址：" + serverIpAddr + "       端口：" + port);
             // 有一定机率卡死（服务端未回复时），所以替换成下一句
@@ -367,7 +383,14 @@ public class TextSendMain {
         if (showQrImg) {
             String selected_ip = (String) stringJComboBoxIps.getSelectedItem();
             // 生成二维码 启动默认浏览器
-            File QR_file = QR_Util.serverQRCode(String.format("%s:%d", selected_ip, getServerListenPort()));
+            String tqip = "[" + selected_ip + "]";
+            if (IpAddressFilter.getIpType(tqip) != 2) {
+                // 如果不是IPv6
+                tqip = selected_ip;
+            }
+            String qrContent = String.format("%s:%d", tqip, getServerListenPort());
+            System.out.println("qrContent = " + qrContent);
+            File QR_file = QR_Util.serverQRCode(qrContent);
             QR_file.deleteOnExit();
             // 用浏览器打开
             // 解决Windows下的兼容问题
@@ -382,10 +405,11 @@ public class TextSendMain {
 
     /**
      * 外部设置按钮文字
+     *
      * @param count 值
      */
-    public static void setClientCount(int count){
-        buttonMode.setText("("+count+")");
+    public static void setClientCount(int count) {
+        buttonMode.setText("(" + count + ")");
     }
 
     /**
@@ -433,7 +457,7 @@ public class TextSendMain {
      * 清空文本框中的文字
      */
     public static void cleanTextArea() {
-        if(!Objects.equals(textArea.getText(), "")){
+        if (!Objects.equals(textArea.getText(), "")) {
             textArea.setText("");
         }
     }
@@ -462,9 +486,9 @@ public class TextSendMain {
                     ip_addr.add(in.getHostAddress());
                     getStatus = true;
                 } else if (in instanceof Inet6Address) {
-                    System.out.println(" - IPv6地址:" + in.getHostAddress());
-                    // 不要IPv6
-//					ip_addr.add(in.getHostAddress());
+                    System.out.println(" - IPv6地址:" + in.getHostAddress().split("%")[0]);
+                    // 不要IPv6的话请注释 %ztc25ityyw
+                    ip_addr.add(in.getHostAddress().split("%")[0]);
                     getStatus = true;
                 }
             }
