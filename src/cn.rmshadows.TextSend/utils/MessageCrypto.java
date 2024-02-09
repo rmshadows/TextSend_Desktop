@@ -43,6 +43,7 @@ public class MessageCrypto {
             String notes = String.format("%s%s%s", clearGsonMessage.getNotes(), MSG_SPLITOR, randomInt());
             notes = tsEncryptString(notes);
             GsonMessage encryptedGm = new GsonMessage(id, data, notes);
+            System.out.print("Log: 【加密】");
             System.out.print(clearGsonMessage);
             System.out.print("  ->  ");
             System.out.println(encryptedGm);

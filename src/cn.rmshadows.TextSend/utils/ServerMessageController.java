@@ -12,7 +12,10 @@ import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
 import java.awt.event.KeyEvent;
-import java.io.*;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -37,10 +40,6 @@ public class ServerMessageController implements Runnable {
     private int connectionStat = -1;
     // 客户端IP
     public final String clientIP;
-    // 输出的流，因为每次发送都新建流容易引发invalid type code: AC
-    // 也就是说发送的时候每次都发送了头部，而接受端只能new一次流
-    // https://zhuanlan.zhihu.com/p/676386082
-    public ObjectOutputStream objectOutputStream = null;
 
     public Socket getSocket() {
         return socket;
@@ -89,7 +88,7 @@ public class ServerMessageController implements Runnable {
             socket.close();
             // 移除列表
             SocketDeliver.socketList.remove(this);
-            System.out.printf("主动断开 用户 %s (%s) 。%n",
+            System.out.printf("Log: 断开 用户 %s (%s) 。%n",
                     clientIP,
                     getClientId());
         } catch (Exception e) {
@@ -121,7 +120,7 @@ public class ServerMessageController implements Runnable {
      * 反馈核对信息到移动端，确保消息接收到 但不保证无误
      */
     public void messageFeedBack() {
-        System.out.println("发送反馈信息到客户端。");
+//        System.out.println("Log: 【发送】发送反馈信息到客户端。");
         sendMessage(new Message(ServerMessageController.SERVER_ID, null, ServerMessageController.MSG_LEN, ServerMessageController.FB_MSG));
     }
 
@@ -131,7 +130,7 @@ public class ServerMessageController implements Runnable {
         Thread receiver = new Thread(new ServerMessageReceiver(this));
         receiver.start();
         // 发送客户端ID给客户端
-        System.out.println("ID -> " + clientIP + "(" + getClientId() + ")");
+        System.out.println("Log: 【发送】发送ID -> " + clientIP + "(" + getClientId() + ")");
         sendMessage(new Message(SERVER_ID, null, MSG_LEN, getClientId()));
         try {
             // 等待监听器结束
@@ -152,7 +151,6 @@ public class ServerMessageController implements Runnable {
 class ServerMessageTransmitter implements Runnable {
     private final Message msg;
     private BufferedOutputStream bufferedOutputStream = null;
-//    private ObjectOutputStream objectOutputStream = null;
     ServerMessageController serverMessageController;
     private final int transmitterTransmissionMode;
 
@@ -164,15 +162,7 @@ class ServerMessageTransmitter implements Runnable {
         this.transmitterTransmissionMode = serverMessageController.getTransmissionModeSet();
         try {
             // 1:JSON 2:Object
-            if (transmitterTransmissionMode == 1) {
-                bufferedOutputStream = new BufferedOutputStream(socket.getOutputStream());
-            } else if (transmitterTransmissionMode == 2) {
-                if(serverMessageController.objectOutputStream == null){
-                    serverMessageController.objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
-                }
-            } else {
-                throw new IOException("获取流失败: 请检查模式设定以及连接状态。");
-            }
+            bufferedOutputStream = new BufferedOutputStream(socket.getOutputStream());
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -185,7 +175,11 @@ class ServerMessageTransmitter implements Runnable {
             GsonMessage egm = GMToolsUtil.MessageToEncrypptedGsonMessage(msg);
             if (transmitterTransmissionMode == 0 || transmitterTransmissionMode == 1) {
                 // JSON传输
-                System.out.println("Server send to " + serverMessageController.clientIP + " (JSON)\n");
+                if(msg.getNotes().equals(ServerMessageController.FB_MSG)){
+                    System.out.println("Log: 【发送反馈】JSON => " + serverMessageController.clientIP + ": " + egm);
+                }else {
+                    System.out.println("Log: 【发送】JSON => " + serverMessageController.clientIP + ": " + egm);
+                }
                 // 将GSM对象读取成文字传输
                 int read;
                 byte[] buf = new byte[1024];
@@ -197,19 +191,21 @@ class ServerMessageTransmitter implements Runnable {
                 // 会关闭输入流（GSM对象读取完了就关闭），不会关闭输出流(会关闭Socket)
                 bufferedInputStream.close();
             } else if (transmitterTransmissionMode == 2) {
-                if(serverMessageController.objectOutputStream == null){
-                    serverMessageController.objectOutputStream = new ObjectOutputStream(serverMessageController.getSocket().getOutputStream());
+                // OBJECT传输
+                if(msg.getNotes().equals(ServerMessageController.FB_MSG)){
+                    System.out.println("Log: 【发送反馈】OBJECT => " + serverMessageController.clientIP + ": " + egm);
+                }else {
+                    System.out.println("Log: 【发送】OBJECT => " + serverMessageController.clientIP + ": " + egm);
                 }
-                System.out.println("Server send to " + serverMessageController.clientIP + " (Object)\n");
-                // 已经序列化GSM
-                serverMessageController.objectOutputStream.writeObject(egm);
-                serverMessageController.objectOutputStream.flush();
-//                objectOutputStream.reset();
-                // 这边不关闭流(采用续写)
-                // https://blog.csdn.net/Marco___/article/details/98380665
-//                objectOutputStream.close();
+                // 将对象序列化为字节数组并分块发送
+                byte[] begm = GMToolsUtil.gsonMessage2bytes(egm);
+                if (begm != null) {
+                    // 将GSM对象读取成byte传输
+                    bufferedOutputStream.write(begm);
+                    bufferedOutputStream.flush();
+                }
             } else {
-                throw new IOException("传输模式设置有误: Modeset error: " + transmitterTransmissionMode);
+                throw new IOException("传输模式设置有误: Mode set error: " + transmitterTransmissionMode);
             }
         } catch (Exception e) {
             // 发送出错会断开连接
@@ -227,9 +223,9 @@ class ServerMessageTransmitter implements Runnable {
  */
 class ServerMessageReceiver implements Runnable {
     private final ServerMessageController serverMessageController;
-    private ObjectInputStream objectInputStream = null;
     private BufferedInputStream bufferedInputStream = null;
     private int receiverTransmissionMode;
+    private int count = 0;
 
     public ServerMessageReceiver(ServerMessageController serverMessageController) {
         this.serverMessageController = serverMessageController;
@@ -238,13 +234,7 @@ class ServerMessageReceiver implements Runnable {
         try {
             if (receiverTransmissionMode == 1) {
                 bufferedInputStream = new BufferedInputStream(socket.getInputStream());
-            }
-//            else if (receiverTransmissionMode == 2) {
-//                // 这句应该是用不到
-////                objectInputStream = new ObjectInputStream(socket.getInputStream());
-//                objectInputStream = new ObjectInputStream(bufferedInputStream);
-//            }
-            else {
+            } else {
                 throw new IOException("ServerMessageReceiver modeSet param error.");
             }
         } catch (Exception e) {
@@ -273,7 +263,7 @@ class ServerMessageReceiver implements Runnable {
                         chunk.append(read);
                         // 读取到JSON末尾
                         if (read.endsWith("}")) {
-                            System.out.println("1:Received chunk: " + chunk);
+                            System.out.println("Log: 【接收】1: <== : " + chunk);
                             // 这里开始处理
                             GsonMessage egm = GMToolsUtil.JSONtoGsonMessage(String.valueOf(chunk));
                             // 解密后的信息
@@ -289,25 +279,26 @@ class ServerMessageReceiver implements Runnable {
                                         // 发送决定后的传输模式 格式： "CONFIRM-" + clientMode"
                                         String selectedMode = selectClientMode(ts[1]);
                                         String allocationMode = "CONFIRM-" + selectedMode;
-                                        // 发送决定后的传输模式(先发送再修改传输模式)
-                                        serverMessageController.sendMessage(new Message(TextSendMain.SERVER_ID, null, TextSendMain.MSG_LEN, allocationMode));
                                         if (selectedMode != null) {
+                                            // 发送决定后的传输模式(先发送再修改传输模式)
+                                            serverMessageController.sendMessage(new Message(TextSendMain.SERVER_ID, null, TextSendMain.MSG_LEN, allocationMode));
                                             serverMessageController.setTransmissionModeSet(Integer.parseInt(selectedMode));
+                                            // 设置接收器模式
+                                            receiverTransmissionMode = serverMessageController.getTransmissionModeSet();
                                         } else {
                                             throw new Exception("客户端支持传输模式不支持，连接配置失败。");
                                         }
                                         // 收到客户端发送的模式清单，说明客户端接受了ID请求，状态直接0变为2。 注意：直接进入接受传输模式交流
                                         serverMessageController.setConnectionStat(2);
-                                        System.err.printf("用户 %s (%s) 已上线。%n",
+                                        System.err.printf("Log: 用户 %s (%s) 已上线(模式:%s)。%n",
                                                 serverMessageController.clientIP,
-                                                serverMessageController.getClientId());
-                                        // 设置接收器模式(启动obj)
-                                        receiverTransmissionMode = serverMessageController.getTransmissionModeSet();
+                                                serverMessageController.getClientId(),
+                                                serverMessageController.getTransmissionModeSet());
                                     } else {
-                                        System.out.println("1:Drop id message (on get support mode :support mode error.) : " + cgm);
+                                        System.out.println("Log: 【丢弃】1:Drop id message (on get support mode :support mode error.) : " + cgm);
                                     }
                                 } else {
-                                    System.out.println("1:Drop id message (on get support mode :id wrong) : " + cgm);
+                                    System.out.println("Log: 【丢弃】1:Drop id message (on get support mode :id wrong) : " + cgm);
                                 }
                             } else {
                                 if (cgm != null) {
@@ -315,7 +306,7 @@ class ServerMessageReceiver implements Runnable {
                                     if (Objects.equals(cgm.getId(), serverMessageController.getClientId())) {
                                         if (cgm.getNotes().equals(ServerMessageController.FB_MSG)) {
                                             // 处理反馈信息
-                                            System.out.println("1:客户端收到了消息。");
+                                            System.out.println("Log: 【接收反馈】1:客户端收到了消息。");
                                             TextSendMain.cleanTextArea();
                                         } else {
                                             StringBuilder text = new StringBuilder();
@@ -324,14 +315,14 @@ class ServerMessageReceiver implements Runnable {
                                             }
                                             // 反馈客户端 注意：仅代表服务端收到信息
                                             serverMessageController.messageFeedBack();
-                                            System.out.println("1:Received: " + serverMessageController.clientIP
+                                            System.out.println("Log: 【接收】JSON <== " + serverMessageController.clientIP
                                                     + "(" + serverMessageController.getClientId() + ") <- " + text);
                                             copyToClickboard(text.toString());
                                             pasteReceivedMessage();
                                         }
                                     } else {
                                         // 丢弃的常规通讯信息
-                                        System.out.println("1:Drop id message (json mode) : " + cgm);
+                                        System.out.println("Log: 【丢弃】1:Drop id message (json mode) : " + cgm);
                                     }
                                 }
                             }
@@ -344,43 +335,62 @@ class ServerMessageReceiver implements Runnable {
                     // 传输对象 传输对象的时候已经进入正常通信了
                     // -2 表示连接断开了 只有服务在运行、客户端没断开才会继续监听
                     // 断开操作在TextSendMain中实现 这里已经解密成明文GM了
-                    if(objectInputStream == null){
-                        System.out.println("Log: 服务端获取ObjectInputStream.....");
-                        objectInputStream = new ObjectInputStream(serverMessageController.getSocket().getInputStream());
-                    }
-                    while(receiverTransmissionMode == 2){
+                    byte[] readBuf = new byte[1024];
+                    // 用于记录上次的值
+                    byte[] chunk = null;
+                    // 读取对象字节数组并反序列化
+                    while (receiverTransmissionMode == 2 && bufferedInputStream.read(readBuf) != -1) {
+                        // 如果服务停止
                         if (serverMessageController.getConnectionStat() == -2 && !TextSendMain.isServerRunning()) {
                             break;
                         }
-                        GsonMessage cgm = MessageCrypto.gsonMessageDecrypt((GsonMessage) objectInputStream.readObject());
-                        if (cgm != null) {
-                            // 判断客户端ID
-                            if (Objects.equals(cgm.getId(), serverMessageController.getClientId())) {
-                                // 如果是客户端的反馈信息
-                                if (cgm.getNotes().equals(ServerMessageController.FB_MSG)) {
-                                    // 处理反馈信息
-                                    System.out.println("2:客户端收到了消息。");
-                                    TextSendMain.cleanTextArea();
-                                } else {
-                                    StringBuilder text = new StringBuilder();
-                                    for (String c : cgm.getData()) {
-                                        text.append(c);
+                        if (chunk == null) {
+                            chunk = readBuf.clone();
+                        } else {
+                            chunk = GMToolsUtil.mergeArrays(chunk, readBuf);
+                        }
+                        // 和上一次的值合并,检查是否到达了结束标记
+                        if (GMToolsUtil.bendsWith(chunk, TextSendMain.endMarker)) {
+                            GsonMessage egm = GMToolsUtil.bytes2GsonMessage(chunk);
+                            // 解密后的信息
+                            GsonMessage cgm = MessageCrypto.gsonMessageDecrypt(egm);
+                            if (cgm != null) {
+                                // 客户端发送的才接受
+                                if (Objects.equals(cgm.getId(), serverMessageController.getClientId())) {
+                                    if (cgm.getNotes().equals(ServerMessageController.FB_MSG)) {
+                                        // 处理反馈信息
+                                        System.out.println("Log: 【接收反馈】2:客户端收到了消息。");
+                                        TextSendMain.cleanTextArea();
+                                    } else {
+                                        StringBuilder text = new StringBuilder();
+                                        for (String c : cgm.getData()) {
+                                            text.append(c);
+                                        }
+                                        // 反馈客户端 注意：仅代表服务端收到信息
+                                        serverMessageController.messageFeedBack();
+                                        System.out.println("Log: 【接收】OBJECT <== : " + serverMessageController.clientIP
+                                                + "(" + serverMessageController.getClientId() + ") <- " + text);
+                                        copyToClickboard(text.toString());
+                                        pasteReceivedMessage();
                                     }
-                                    // 反馈服务器
-                                    serverMessageController.messageFeedBack();
-                                    System.out.println("2:反馈: " + serverMessageController.clientIP
-                                            + "(" + serverMessageController.getClientId() + ") <- " + text);
-                                    copyToClickboard(text.toString());
-                                    pasteReceivedMessage();
+                                } else {
+                                    // 丢弃的常规通讯信息
+                                    System.out.println("Log: 【丢弃】2:Drop id message (object mode) : " + cgm);
                                 }
+                                chunk = null;
                             }
                         }
                     }
                 } else {
-                    throw new IOException("Modeset error.");
+                    throw new IOException("Mode set error.");
+                }
+                count ++ ;
+                if(count > 10){
+                    System.out.println("Log: Count 10 次，结束Socket。");
+                    break;
                 }
             }
-            System.out.println("Socket has ended.");
+            System.out.println("Log: Socket has ended.");
             serverMessageController.setConnectionStat(-1);
             TextSendMain.isClientConnected = false;
         } catch (Exception e) {
@@ -408,19 +418,19 @@ class ServerMessageReceiver implements Runnable {
             JsonObject jsonObject = jsonElement.getAsJsonObject();
             // [1, 2]
             String[] strings = new Gson().fromJson(jsonObject.get("supportMode"), String[].class);
-            System.err.println("获取到客户端支持的模式：" + Arrays.toString(strings));
+            System.err.println("Log: 【模式选择】获取到客户端支持的模式：" + Arrays.toString(strings));
             // 不使用Supplier会: stream has already been operated upon or closed
             Supplier<Stream<String>> streamSupplier = () -> Stream.of(strings);
 
             // 支持Object传输就用 2
             if (streamSupplier.get().anyMatch(n -> n.equals("2"))) {
-                System.out.println("客户端支持Object传输，使用模式2。");
+                System.out.println("Log: 【模式选择】客户端支持Object传输，使用模式2。");
                 return "2";
             } else if (streamSupplier.get().anyMatch(n -> n.equals("1"))) {
-                System.out.println("客户端支持Object传输，使用模式1。");
+                System.out.println("Log: 【模式选择】客户端支持JSON传输，使用模式1。");
                 return "1";
             } else {
-                throw new IOException("客户端支持传输模式不支持。");
+                throw new IOException("Log: 【模式选择】客户端支持传输模式不支持。");
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -477,6 +487,7 @@ class ServerMessageReceiver implements Runnable {
             // 把文本内容设置到系统剪贴板
             clipboard.setContents(trans, null);
         }
-        System.out.println("已复制到剪辑板。");
+//        System.out.println("已复制到剪辑板。");
     }
+
 }

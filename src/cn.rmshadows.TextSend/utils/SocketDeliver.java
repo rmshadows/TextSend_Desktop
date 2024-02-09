@@ -101,7 +101,7 @@ public class SocketDeliver implements Runnable {
                 if (socketList.size() < TextSendMain.maxConnection) {
                     final Socket socket;
                     try {
-                        System.out.println("Socket is delivering......");
+                        System.out.println("Log: 【分发】Socket is delivering......");
                         socket = server.accept();
                         ServerMessageController client = new ServerMessageController(socket);
                         // 断开后删除列表的方法写在ServerMessageController

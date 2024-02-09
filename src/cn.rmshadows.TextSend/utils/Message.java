@@ -51,10 +51,10 @@ public class Message implements Serializable {
 	 */
 	public Message(String id, String text, int length, String notes) {
 		// 去除null
-		if (text == null) {
+		if (text == null || text.equals("")) {
 			text = "";
 		}else {
-			System.out.println("Message encapsulation：" + text);
+			System.out.println("Log: 【封装】Message：" + text);
 		}
 		setId(id);
 		if (notes != null) {

@@ -15,6 +15,7 @@ import java.awt.event.MouseListener;
 import java.io.File;
 import java.io.IOException;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedList;
 import java.util.Objects;
@@ -26,7 +27,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * TextSend Ryan Yim Java Swing
  */
 public class TextSendMain {
-    final public static String VERSION = "4.0.4";
+    final public static String VERSION = "4.0.5";
     // Server
     // 服务器消息自带的ID
     final public static String SERVER_ID = "-200";
@@ -54,6 +55,8 @@ public class TextSendMain {
     final public static int MSG_LEN = 1000;
     // 加密用的Token
     final public static String AES_TOKEN = "cn.rmshadows.TS_TOKEN";
+    // OBJECT传输结束标记
+    final public static byte[] endMarker = "▓⒣".getBytes(StandardCharsets.UTF_8);
     // 是否是服务界面
     private static boolean isServerMode = true;
     // 网卡IP地址
@@ -88,7 +91,7 @@ public class TextSendMain {
      * 客户端界面
      */
     private static void textSendClient() {
-        System.out.println("Enter the client graphical user interface.");
+        System.out.println("Log: Enter the client graphical user interface.");
         JFrame.setDefaultLookAndFeelDecorated(true);
         // Init
         frame = new JFrame();
@@ -192,10 +195,11 @@ public class TextSendMain {
                     serverIpAddr = p.getFirst();
                     port = Integer.parseInt(p.getSecond());
                 }
+            }else {
+                throw new Exception("Log: 错误IP地址。");
             }
-            System.out.println("地址：" + serverIpAddr + "       端口：" + port);
+            System.out.println("Log: 地址：" + serverIpAddr + "       端口：" + port);
             // 有一定机率卡死（服务端未回复时），所以替换成下一句
-//            clientSocket = new Socket(serverIpAddr, port);
             clientSocket = new Socket();
             clientSocket.connect(new InetSocketAddress(serverIpAddr, port), 5000);
             // 如果连接成功
@@ -243,7 +247,7 @@ public class TextSendMain {
      * 服务端界面
      */
     private static void textSendServer() {
-        System.out.println("Enter the server graphical user interface.");
+        System.out.println("Log: Enter the server graphical user interface.");
         // Swing setup
         JFrame.setDefaultLookAndFeelDecorated(true);
         // Init
