@@ -46,9 +46,8 @@ public class GMToolsUtil {
 
     /**
      * GsonMessage转字节
-     *
-     * @param gm
-     * @return
+     * @param gm GsonMessage
+     * @return byte[]
      */
     public static byte[] gsonMessage2bytes(GsonMessage gm) {
         try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
@@ -56,14 +55,21 @@ public class GMToolsUtil {
             objectOutputStream.writeObject(gm);
             objectOutputStream.flush();
             objectOutputStream.close();
-            return mergeArrays(byteArrayOutputStream.toByteArray(), TextSendMain.endMarker);
+            byte[] data = byteArrayOutputStream.toByteArray();
+            data = mergeArrays(data, TextSendMain.endMarker);
+            return data;
         } catch (Exception e) {
             e.printStackTrace();
         }
         return null;
     }
 
-    // 合并数组
+    /**
+     * 合并数组
+     * @param array1 数组1
+     * @param array2 数组2
+     * @return 数组1+数组2
+     */
     public static byte[] mergeArrays(byte[] array1, byte[] array2) {
         byte[] mergedArray = new byte[array1.length + array2.length];
         System.arraycopy(array1, 0, mergedArray, 0, array1.length);
@@ -71,7 +77,12 @@ public class GMToolsUtil {
         return mergedArray;
     }
 
-    // 去除末尾的结束符号
+    /**
+     * 去除末尾的结束符号
+     * @param c 字节数组
+     * @param b 结束符号字节数组
+     * @return 去除末尾的结束符号de字节数组
+     */
     public static byte[] removeArray(byte[] c, byte[] b) {
         int index = indexOfSubArray(c, b);
         if (index != -1) {
@@ -84,7 +95,12 @@ public class GMToolsUtil {
         }
     }
 
-    // 查找子数组在数组中的起始索引
+    /**
+     * 查找子数组在数组中的起始索引
+     * @param array 数组
+     * @param subArray 子数组
+     * @return 索引
+     */
     public static int indexOfSubArray(byte[] array, byte[] subArray) {
         for (int i = 0; i <= array.length - subArray.length; i++) {
             boolean found = true;
@@ -101,7 +117,11 @@ public class GMToolsUtil {
         return -1;
     }
 
-    // 去掉末尾的0
+    /**
+     * 去掉字节数组末尾的0
+     * @param array 字节数组
+     * @return 去尾0字节数组
+     */
     public static byte[] removeTrailingZeros(byte[] array) {
         int lastIndex = array.length - 1;
         while (lastIndex >= 0 && array[lastIndex] == 0) {
@@ -113,8 +133,8 @@ public class GMToolsUtil {
 
     /**
      * 字节转GM
-     * @param bytes
-     * @return
+     * @param bytes 字节数组
+     * @return GsonMessage
      */
     public static GsonMessage bytes2GsonMessage(byte[] bytes) {
         // 去零
@@ -130,21 +150,22 @@ public class GMToolsUtil {
         return null;
     }
 
-    // 判断字节数组是否以指定的字节数组结尾
+    /**
+     * 判断字节数组是否以指定的字节数组结尾
+     * @param data 字节数组
+     * @param endMarker 指定的字节数组
+     * @return 是否
+     */
     public static boolean bendsWith(byte[] data, byte[] endMarker) {
         data = removeTrailingZeros(data);
         if (data.length < endMarker.length) {
-//            System.out.println("bendsWith:false");
             return false;
         }
         for (int i = 0; i < endMarker.length; i++) {
             if (data[data.length - endMarker.length + i] != endMarker[i]) {
-//                System.out.println("bendsWith:false");
                 return false;
             }
         }
-//        System.out.println("bendsWith:true");
         return true;
     }
-
 }

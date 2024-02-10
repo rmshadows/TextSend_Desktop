@@ -338,16 +338,17 @@ class ServerMessageReceiver implements Runnable {
                     byte[] readBuf = new byte[1024];
                     // 用于记录上次的值
                     byte[] chunk = null;
+                    int readLength;
                     // 读取对象字节数组并反序列化
-                    while (receiverTransmissionMode == 2 && bufferedInputStream.read(readBuf) != -1) {
+                    while (((readLength = bufferedInputStream.read(readBuf)) != -1) && receiverTransmissionMode == 2) {
                         // 如果服务停止
                         if (serverMessageController.getConnectionStat() == -2 && !TextSendMain.isServerRunning()) {
                             break;
                         }
                         if (chunk == null) {
-                            chunk = readBuf.clone();
+                            chunk = Arrays.copyOfRange(readBuf, 0, readLength);
                         } else {
-                            chunk = GMToolsUtil.mergeArrays(chunk, readBuf);
+                            chunk = GMToolsUtil.mergeArrays(chunk, Arrays.copyOfRange(readBuf, 0, readLength));
                         }
                         // 和上一次的值合并,检查是否到达了结束标记
                         if (GMToolsUtil.bendsWith(chunk, TextSendMain.endMarker)) {

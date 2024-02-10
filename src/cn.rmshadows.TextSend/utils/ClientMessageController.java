@@ -11,6 +11,7 @@ import java.awt.event.KeyEvent;
 import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Objects;
 
 public class ClientMessageController implements Runnable {
@@ -253,17 +254,18 @@ class ClientMessageReceiver implements Runnable {
                     // 用于记录上次的值
                     byte[] chunk = null;
                     byte[] readBuf = new byte[1024];
-                    while (receiverTransmissionMode == 2 && bufferedInputStream.read(readBuf) != -1) {
+                    int readLength;
+                    while ((readLength = bufferedInputStream.read(readBuf))!= -1 && receiverTransmissionMode == 2) {
                         // 如果服务停止
                         if (!TextSendMain.isClientConnected) {
                             break;
                         }
                         // 如果是第一次，就赋值
                         if(chunk == null){
-                            chunk = readBuf.clone();
+                            chunk = Arrays.copyOfRange(readBuf, 0, readLength);
                         }else {
                             // 不是就合并
-                            chunk = GMToolsUtil.mergeArrays(chunk, readBuf);
+                            chunk = GMToolsUtil.mergeArrays(chunk, Arrays.copyOfRange(readBuf, 0, readLength));
                         }
                         // 检查是否到达了结束标记
                         if (GMToolsUtil.bendsWith(chunk, TextSendMain.endMarker)) {
