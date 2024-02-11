@@ -1,0 +1,11 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Textend-4.0.5
+GenericName=文字互传
+Comment=Textsend
+Exec=【Path】Textsend_for_Linux_4.0.5/Linux_launcher
+Icon=【Path】Textsend_for_Linux_4.0.5/textsend_icon.png
+Terminal=true
+Type=Application
+Categories=Application;
+StartupNotify=false
