@@ -1,6 +1,6 @@
  # TextSend_Desktop
 
- - Current Version: 4.0.2
+ - Current Version: 4.0.5
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 11 Swing Linux （Windows没测试过，但应该也没问题。OSX应该用不了，要改代码）
@@ -63,15 +63,20 @@ Gradle是非模块化的项目
 
 ### 更新日志
 
+- 2024.2.11——4.0.5
+  - 适配了IPv6
+  - 新增传输模式JSON
+  - 适配了uTools插件
+  - 重构Android端（迁移Kotlin）
+  - 修复了Object传输模式接收器尾巴不干净的问题
+  
 - 2023.09.02 - 4.0.2
   - 新增连接超时
-  
+
   - 显示客户端数量功能
-  
 - 2023.09.01 - 4.0.1
   - 大更新：兼容Nodejs端
   - 支持JSON、和Java对象传输
-
 - 2021.09.09 - 3.1.2
   - 添加了多网卡支持
   - 修复了Windows下空格路径二维码路径报错的Bug
