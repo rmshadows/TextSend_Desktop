@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>cn.rmshadows</groupId>
 	<artifactId>TextSend</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>4.0.5</version>
 	<dependencies>
 		<!-- https://mvnrepository.com/artifact/com.google.zxing/javase -->
 		<dependency>
@@ -20,36 +20,35 @@
 	</dependencies>
 
 	<build>
-		<sourceDirectory>src/cn.rmshadows.TextSend</sourceDirectory>
-        <!-- To define the plugin version in your parent POM -->
-        <pluginManagement>
-            <plugins>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-jlink-plugin</artifactId>
-                    <version>3.1.0</version>
-                </plugin>
-            </plugins>
-        </pluginManagement>
 		<plugins>
 			<plugin>
-				<artifactId>maven-compiler-plugin</artifactId>
-				<version>3.8.1</version>
-				<configuration>
-					<release>17</release>
-				</configuration>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-shade-plugin</artifactId>
+				<version>3.2.4</version>
+				<executions>
+					<execution>
+						<phase>package</phase>
+						<goals>
+							<goal>shade</goal>
+						</goals>
+						<configuration>
+							<finalName>my-app-shaded</finalName>
+							<shadedArtifactAttached>true</shadedArtifactAttached>
+							<createDependencyReducedPom>false</createDependencyReducedPom>
+							<filters>
+								<filter>
+									<artifact>*:*</artifact>
+<!--									<excludes>-->
+<!--										&lt;!&ndash; Exclude any dependencies that should not be included &ndash;&gt;-->
+<!--										<exclude>com.example:dependency-to-exclude</exclude>-->
+<!--									</excludes>-->
+								</filter>
+							</filters>
+						</configuration>
+					</execution>
+				</executions>
 			</plugin>
-            <!-- To use the plugin goals in your POM or parent POM -->
-            <!--https://maven.apache.org/plugins/maven-jlink-plugin/plugin-info.html-->
-            <!--https://maven.apache.org/plugins/maven-jlink-plugin/usage.html-->
-            <plugin>
-                <artifactId>maven-jlink-plugin</artifactId>
-                <version>3.1.0</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <!-- configuration elements goes here -->
-                </configuration>
-            </plugin>
 		</plugins>
 	</build>
+
 </project>
