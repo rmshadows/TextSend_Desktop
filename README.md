@@ -1,6 +1,6 @@
  # TextSend_Desktop
 
- - Current Version: 4.0.5
+ - Current Version: 5.0.32
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 11 Swing Linux （Windows没测试过，但应该也没问题。OSX应该用不了，要改代码）
@@ -18,6 +18,24 @@ Gradle是非模块化的项目
 ./gradlew run
 ./gradlew runtime
 ```
+
+### 打包
+
+说明和各脚本用途见 [`pack/README.md`](pack/README.md)。
+
+Linux / macOS：
+
+```bash
+./pack/pack.sh
+```
+
+Windows PowerShell（在 `TextSend_Desktop` 目录）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pack\pack.ps1
+```
+
+Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应系统上打，不能交叉编译。
 
 ### 界面功能
 
@@ -62,6 +80,26 @@ Gradle是非模块化的项目
 连接好手机后，打开一个Word文档，鼠标在Word文本输入的地方点一下，保证文本输入区域是焦点。这样手机发过来的文字会直接打在Word文档中。如果不小心失去焦点，没输入成功。你只需要右击粘贴就是，因为手机发送的文字也是存在电脑剪贴板上的。
 
 ### 更新日志
+
+5.0.0 起为协议 v1（二进制帧 / AES-GCM / `ts://`），与旧 4.0.x JSON 协议不互通。
+
+- 2026.8.21——5.0.32
+  - `pack/README.md`；Linux/mac `./pack/pack.sh`；Windows PowerShell `.\pack\pack.ps1`（JAR + 绿色目录 + 本平台安装包）
+
+- 2026.8.20——5.0.31
+  - 客户端连接串可省略端口，默认 54300
+
+- 2026.8.20——5.0.30
+  - 程序目录不可写时配置退回主目录 `.textsend.properties`
+
+- 2026.8.20——5.0.29
+  - 打包脚本：fat JAR / 绿色目录 / Linux `.deb`
+
+- 2026.8.18——5.0.28
+  - 连接串握手成功才清空；发送等 ACK 再清；连接/发送不堵界面；二维码在窗口内显示
+
+- 2026.8.17——5.0.0
+  - 接入协议 v1：二进制帧、AES-GCM、PIN / 长密钥、`ts://` 二维码
 
 - 2024.2.11——4.0.5
   - 适配了IPv6
