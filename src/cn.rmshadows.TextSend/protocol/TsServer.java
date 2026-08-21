@@ -3,11 +3,17 @@ package protocol;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 
 /**
@@ -20,17 +26,20 @@ public final class TsServer implements Runnable {
     private final int maxConnections;
     private final PairingMaterial material;
     private final IntConsumer onClientCount;
+    private final FileIoCallback fileIo;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final List<TsPeer> peers = new ArrayList<>();
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final AuthLimiter authLimiter = new AuthLimiter();
     private ServerSocket serverSocket;
 
-    public TsServer(int port, int maxConnections, PairingMaterial material, IntConsumer onClientCount) {
+    public TsServer(int port, int maxConnections, PairingMaterial material, IntConsumer onClientCount,
+                   FileIoCallback fileIo) {
         this.port = port;
         this.maxConnections = maxConnections;
         this.material = material;
         this.onClientCount = onClientCount;
+        this.fileIo = fileIo;
         instance = this;
     }
 
@@ -52,6 +61,37 @@ public final class TsServer implements Runnable {
             return -1;
         }
         return s.sendToAll(text);
+    }
+
+    public static int aliveCountCurrent() {
+        TsServer s = instance;
+        return s == null ? -1 : s.aliveCount();
+    }
+
+    public static int sendFileToAllCurrent(Path path, BooleanSupplier cancelled) throws Exception {
+        return sendFileToAllCurrent(path, cancelled, null, null);
+    }
+
+    public static int sendFileToAllCurrent(Path path, BooleanSupplier cancelled,
+                                           String treeName, String relPath) throws Exception {
+        return sendFileToAllCurrent(path, cancelled, treeName, relPath, 0, 0);
+    }
+
+    public static int sendFileToAllCurrent(Path path, BooleanSupplier cancelled,
+                                           String treeName, String relPath, int seq, int of)
+            throws Exception {
+        TsServer s = instance;
+        if (s == null) {
+            return -1;
+        }
+        return s.sendFileToAll(path, cancelled, treeName, relPath, seq, of);
+    }
+
+    public static void cancelFilesCurrent() {
+        TsServer s = instance;
+        if (s != null) {
+            s.cancelFiles();
+        }
     }
 
     public void stop() {
@@ -114,6 +154,7 @@ public final class TsServer implements Runnable {
                         }
                         notifyCount();
                     });
+                    peer.setFileIo(fileIo);
                     box[0] = peer;
                     peers.add(peer);
                     pool.execute(peer);
@@ -148,6 +189,154 @@ public final class TsServer implements Runnable {
             }
         }
         return sent;
+    }
+
+    public int aliveCount() {
+        synchronized (peers) {
+            return (int) peers.stream().filter(TsPeer::isAlive).count();
+        }
+    }
+
+    public int sendFileToAll(Path path, BooleanSupplier cancelled) throws Exception {
+        return sendFileToAll(path, cancelled, null, null);
+    }
+
+    public int sendFileToAll(Path path, BooleanSupplier cancelled, String treeName, String relPath)
+            throws Exception {
+        return sendFileToAll(path, cancelled, treeName, relPath, 0, 0);
+    }
+
+    public int sendFileToAll(Path path, BooleanSupplier cancelled, String treeName, String relPath,
+                             int seq, int of) throws Exception {
+        List<TsPeer> snap;
+        synchronized (peers) {
+            snap = new ArrayList<>(peers);
+        }
+        List<TsPeer> targets = new ArrayList<>();
+        int unsupported = 0;
+        for (TsPeer p : snap) {
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                throw new IOException("cancelled");
+            }
+            if (!p.isAlive()) {
+                continue;
+            }
+            if (!p.supportsFile()) {
+                unsupported++;
+                continue;
+            }
+            targets.add(p);
+        }
+        if (targets.isEmpty()) {
+            if (unsupported > 0) {
+                throw new IOException("对端还不支持文件传输");
+            }
+            return 0;
+        }
+        long size = Files.size(path);
+        int n = targets.size();
+        if (n == 1) {
+            targets.get(0).sendFile(path, cancelled, treeName, relPath, seq, of);
+            return 1;
+        }
+        final long[] peerBytes = new long[n];
+        final Object progressLock = new Object();
+        FileIoCallback[] prev = new FileIoCallback[n];
+        for (int i = 0; i < n; i++) {
+            TsPeer p = targets.get(i);
+            prev[i] = p.getFileIo();
+            final int idx = i;
+            FileIoCallback orig = prev[i];
+            p.setFileIo(new FileIoCallback() {
+                @Override
+                public void onProgress(boolean incoming, String name, long done, long total, int s, int o) {
+                    if (incoming) {
+                        if (orig != null) {
+                            orig.onProgress(true, name, done, total, s, o);
+                        }
+                        return;
+                    }
+                    long sum;
+                    synchronized (progressLock) {
+                        peerBytes[idx] = done;
+                        sum = 0;
+                        for (long b : peerBytes) {
+                            sum += b;
+                        }
+                    }
+                    if (orig != null) {
+                        orig.onProgress(false, name, sum, size * n, s, o);
+                    }
+                }
+
+                @Override
+                public void onReceived(String name, String where) {
+                    if (orig != null) {
+                        orig.onReceived(name, where);
+                    }
+                }
+
+                @Override
+                public void onReceiveFailed(String name, String err) {
+                    if (orig != null) {
+                        orig.onReceiveFailed(name, err);
+                    }
+                }
+            });
+        }
+        ExecutorService ex = Executors.newFixedThreadPool(n);
+        int sent = 0;
+        Exception last = null;
+        try {
+            List<Future<?>> futs = new ArrayList<>();
+            for (TsPeer p : targets) {
+                futs.add(ex.submit(() -> {
+                    p.sendFile(path, cancelled, treeName, relPath, seq, of);
+                    return null;
+                }));
+            }
+            for (Future<?> f : futs) {
+                try {
+                    f.get();
+                    sent++;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("cancelled");
+                } catch (ExecutionException e) {
+                    Throwable c = e.getCause() == null ? e : e.getCause();
+                    if (c.getMessage() != null && c.getMessage().contains("cancelled")) {
+                        cancelFiles();
+                        throw (c instanceof Exception ex0) ? ex0 : new IOException("cancelled", c);
+                    }
+                    last = c instanceof Exception ex1 ? ex1 : new IOException(c);
+                    c.printStackTrace();
+                }
+            }
+        } finally {
+            ex.shutdownNow();
+            try {
+                ex.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            for (int i = 0; i < n; i++) {
+                targets.get(i).setFileIo(prev[i]);
+            }
+        }
+        if (sent == 0 && last != null) {
+            throw last;
+        }
+        return sent;
+    }
+
+    public void cancelFiles() {
+        List<TsPeer> snap;
+        synchronized (peers) {
+            snap = new ArrayList<>(peers);
+        }
+        for (TsPeer p : snap) {
+            p.cancelFile();
+        }
     }
 
     private void notifyCount() {

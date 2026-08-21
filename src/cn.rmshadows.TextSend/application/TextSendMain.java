@@ -1,25 +1,35 @@
 package application;
 
 import ScheduleTask.ScheduleTask;
+import protocol.FileIoCallback;
+import protocol.FileNames;
 import protocol.PairingMaterial;
+import protocol.PasteUtil;
 import protocol.Protocol;
 import protocol.TsPeer;
 import protocol.TsServer;
 import protocol.TsUri;
 import utils.QR_Util;
 
+import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.plaf.metal.DefaultMetalTheme;
 import javax.swing.plaf.metal.MetalLookAndFeel;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.text.DefaultEditorKit;
+import javax.swing.text.JTextComponent;
 import javax.swing.undo.UndoManager;
 import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.HierarchyEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
@@ -27,6 +37,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -35,9 +46,22 @@ import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
@@ -48,7 +72,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.32";
+    public static final String VERSION = "5.0.42";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -76,6 +100,90 @@ public class TextSendMain {
     private static boolean clientHandshaking = false;
     private static volatile boolean clientConnectAbort = false;
     private static volatile boolean sending = false;
+    private static volatile boolean fileBusy = false;
+    private static volatile boolean transferUi = false;
+    private static final AtomicBoolean cancelFileSend = new AtomicBoolean(false);
+    private static final Object sendLock = new Object();
+    /** 正在发送队列（可在发送中追加）。 */
+    private static final List<File> sendRemaining = new ArrayList<>();
+    private static volatile File currentSendingFile;
+    /** 本轮已成功发出的个数，按文件夹名（扁文件用空串）分组，用来显示 3/40 */
+    private static final Map<String, Integer> sendDoneByTree = new HashMap<>();
+    private static final Object progressLock = new Object();
+    private static boolean progressPosted;
+    private static boolean progressIncoming;
+    private static String progressName = "";
+    private static long progressDone;
+    private static long progressTotal;
+    private static int progressSeq;
+    private static int progressOf;
+    private static String speedKey = "";
+    private static long speedMarkNs;
+    private static long speedMarkBytes;
+    private static double speedBps;
+    private static final FileIoCallback FILE_IO = new FileIoCallback() {
+        @Override
+        public void onProgress(boolean incoming, String name, long done, long total, int seq, int of) {
+            long now = System.nanoTime();
+            int showSeq = seq;
+            int showOf = of;
+            if (!incoming) {
+                synchronized (sendLock) {
+                    File cur = currentSendingFile;
+                    if (cur != null) {
+                        int[] so = sendSeqOfLocked(cur);
+                        showSeq = so[0];
+                        showOf = so[1];
+                    }
+                }
+            }
+            synchronized (progressLock) {
+                String key = (incoming ? "in:" : "out:") + (name == null ? "" : name);
+                if (!key.equals(speedKey) || done < speedMarkBytes) {
+                    speedKey = key;
+                    speedMarkNs = now;
+                    speedMarkBytes = done;
+                    speedBps = 0;
+                } else if (now - speedMarkNs >= 400_000_000L) {
+                    long dt = now - speedMarkNs;
+                    speedBps = (done - speedMarkBytes) * 1_000_000_000.0 / dt;
+                    speedMarkNs = now;
+                    speedMarkBytes = done;
+                }
+                progressIncoming = incoming;
+                progressName = name == null ? "" : name;
+                progressDone = done;
+                progressTotal = total;
+                progressSeq = showSeq;
+                progressOf = showOf;
+                if (progressPosted) {
+                    return;
+                }
+                progressPosted = true;
+            }
+            SwingUtilities.invokeLater(TextSendMain::flushProgressUi);
+        }
+
+        @Override
+        public void onReceived(String name, String where) {
+            SwingUtilities.invokeLater(() -> {
+                endTransferUi();
+                if ("剪贴板".equals(where)) {
+                    flashStatus("已放入剪贴板：" + name);
+                } else {
+                    flashStatus("已保存 " + name + " → 下载/" + FileNames.FOLDER);
+                }
+            });
+        }
+
+        @Override
+        public void onReceiveFailed(String name, String err) {
+            SwingUtilities.invokeLater(() -> {
+                endTransferUi();
+                flashStatus("接收失败 " + name + "：" + err);
+            });
+        }
+    };
     public static AtomicBoolean scheduleControl = new AtomicBoolean(false);
 
     private static boolean isServerMode = true;
@@ -94,9 +202,13 @@ public class TextSendMain {
     private static JButton buttonStart;
     private static JButton buttonRole;
     private static JButton buttonSend;
+    private static JButton buttonFile;
     private static JButton buttonQr;
     private static JButton buttonHelp;
     private static JLabel labelStatus;
+    private static JPanel statusBar;
+    private static JProgressBar progressBar;
+    private static JButton buttonCancel;
     private static JLabel labelScale;
     /** 小窗唯一输入区：未启动=IP / 启动=PIN / 有连接或客户端=消息·连接串（对齐你原版 textArea） */
     private static JTextArea miniTextArea;
@@ -107,6 +219,34 @@ public class TextSendMain {
     private static JScrollPane scrollMessage;
     private static UndoManager undoMessage;
     private static UndoManager undoMini;
+    private static final List<File> fileQueue = new ArrayList<>();
+    /** fileKey → 文件夹名（隐藏发树时） */
+    private static final Map<String, String> queueTree = new HashMap<>();
+    /** fileKey → 树内相对路径 */
+    private static final Map<String, String> queueRel = new HashMap<>();
+    private static File pastePreviewFile;
+    private static BufferedImage pastePreviewImage;
+    private static JPanel pastePreview;
+    private static JLabel pastePreviewThumb;
+    private static JLabel pastePreviewText;
+    private static JDialog pastePreviewDialog;
+    private static JCheckBox checkFollowLinks;
+    private static final DefaultTableModel fileModel = new DefaultTableModel(
+            new Object[]{"文件名", "所在路径", "大小"}, 0) {
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            return false;
+        }
+    };
+    private static JTable fileTable;
+    private static JScrollPane scrollFiles;
+    private static JPanel filePanel;
+    private static JLabel labelFileQueue;
+    private static JButton buttonBrowse;
+    private static JButton buttonRemoveFiles;
+    private static File lastFileChooserDir;
+    /** 待发列表默认收起，点标题或把文件拖进输入框再展开 */
+    private static boolean fileListExpanded = false;
 
     private static JPanel cardPin;
     private static JPanel cardKey;
@@ -200,12 +340,25 @@ public class TextSendMain {
         buttonStart = new JButton(server ? "启动" : "连接");
         buttonRole = new JButton(server ? "客户端" : "服务端");
         buttonSend = new JButton("发送");
+        buttonFile = new JButton("文件");
         buttonQr = new JButton("二维码");
         buttonHelp = new JButton("帮助");
         buttonHelp.addActionListener(e -> showHelp());
 
         labelStatus = new JLabel(" ");
         labelStatus.setForeground(MUTED);
+        progressBar = new JProgressBar(0, 1000);
+        progressBar.setVisible(false);
+        progressBar.setStringPainted(false);
+        buttonCancel = new JButton("取消");
+        buttonCancel.setVisible(false);
+        buttonCancel.setToolTipText("取消当前传输");
+        buttonCancel.addActionListener(e -> cancelTransfer());
+        statusBar = new JPanel(new BorderLayout(8, 0));
+        statusBar.setOpaque(false);
+        statusBar.add(progressBar, BorderLayout.WEST);
+        statusBar.add(labelStatus, BorderLayout.CENTER);
+        statusBar.add(buttonCancel, BorderLayout.EAST);
 
         miniTextArea = new JTextArea();
         miniTextArea.setLineWrap(true);
@@ -259,6 +412,7 @@ public class TextSendMain {
                 sendMessage();
             }
         });
+        buttonFile.addActionListener(e -> pickAndAddFiles());
         buttonQr.addActionListener(e -> showQr());
 
         if (server) {
@@ -354,6 +508,12 @@ public class TextSendMain {
                 sendMessage();
             }
         });
+        am.put("ts-file", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                pickAndAddFiles();
+            }
+        });
         am.put("ts-help", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
@@ -365,6 +525,7 @@ public class TextSendMain {
             im.put(KeyStroke.getKeyStroke(KeyEvent.VK_W, mask | InputEvent.SHIFT_DOWN_MASK), "ts-quit");
             im.put(KeyStroke.getKeyStroke(KeyEvent.VK_Q, mask), "ts-quit");
             im.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, mask), "ts-send");
+            im.put(KeyStroke.getKeyStroke(KeyEvent.VK_O, mask), "ts-file");
         }
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0), "ts-help");
     }
@@ -647,6 +808,8 @@ public class TextSendMain {
         frame.add(miniPanelText);
         frame.add(miniPanelBtns);
         bindEscapeExitMini((JComponent) frame.getContentPane());
+        installFileDrop(miniTextArea);
+        installFileDrop((JComponent) frame.getContentPane());
         refreshMiniShared();
     }
 
@@ -690,6 +853,7 @@ public class TextSendMain {
         frame.add(miniPanelText);
         frame.add(miniPanelBtns);
         bindEscapeExitMini((JComponent) frame.getContentPane());
+        installFileDrop(miniTextArea);
         miniShowingPin = false;
     }
 
@@ -817,15 +981,46 @@ public class TextSendMain {
             areaMessage.setForeground(TEXT);
             areaMessage.setBackground(Color.WHITE);
             scrollMessage.setAlignmentX(Component.LEFT_ALIGNMENT);
-            // 两端消息区同高，避免切角色跳动
             scrollMessage.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(220)));
             body.add(scrollMessage);
+            ensurePastePreview();
+            pastePreview.setAlignmentX(Component.LEFT_ALIGNMENT);
+            body.add(pastePreview);
+            body.add(Box.createVerticalStrut(UserConfig.s(6)));
+            ensureFileTable();
+            labelFileQueue.setFont(labelFileQueue.getFont().deriveFont((float) UserConfig.s(12)));
+            labelFileQueue.setForeground(TEXT);
+            fileTable.setRowHeight(Math.max(22, UserConfig.s(22)));
+            fileTable.setFont(fileTable.getFont().deriveFont((float) UserConfig.s(12)));
+            fileTable.getTableHeader().setFont(fileTable.getTableHeader().getFont().deriveFont((float) UserConfig.s(11)));
+            if (buttonBrowse != null) {
+                fixToolbarButton(buttonBrowse, 72);
+            }
+            fixToolbarButton(buttonRemoveFiles, 72);
+            scrollFiles.setAlignmentX(Component.LEFT_ALIGNMENT);
+            filePanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            body.add(filePanel);
+            installFileDrop(areaMessage);
+            installSmartPaste(areaMessage);
+            installSmartPaste(miniTextArea);
+            installFileDrop(fileTable);
+            installFileDrop(scrollFiles);
+            installFileDrop(root);
+            applyFileListLayout();
+            refreshFileQueueLabel();
 
             labelStatus.setFont(labelStatus.getFont().deriveFont((float) UserConfig.s(12)));
             labelStatus.setForeground(MUTED);
+            progressBar.setPreferredSize(new Dimension(UserConfig.s(140), UserConfig.s(10)));
+            Dimension cancelSz = new Dimension(UserConfig.s(64), UserConfig.s(24));
+            buttonCancel.setPreferredSize(cancelSz);
+            buttonCancel.setMinimumSize(cancelSz);
+            buttonCancel.setMaximumSize(cancelSz);
+            buttonCancel.setMargin(new Insets(0, 6, 0, 6));
+            buttonCancel.setFont(buttonCancel.getFont().deriveFont((float) UserConfig.s(12)));
             root.add(top, BorderLayout.NORTH);
             root.add(body, BorderLayout.CENTER);
-            root.add(labelStatus, BorderLayout.SOUTH);
+            root.add(statusBar, BorderLayout.SOUTH);
             // 固定大窗尺寸，切角色不变形
             frame.setSize(UserConfig.s(760), UserConfig.s(560));
         }
@@ -1077,12 +1272,16 @@ public class TextSendMain {
                 valueKey.setToolTipText(null);
             }
             buttonQr.setEnabled(true);
-            labelStatus.setText(runningStatusText());
+            if (!transferUi && labelStatus != null) {
+                labelStatus.setText(runningStatusText());
+            }
         } else {
             buttonStart.setText(clientBusy ? "断开" : "连接");
             buttonRole.setText("服务端");
             buttonQr.setEnabled(false);
-            labelStatus.setText(runningStatusText());
+            if (!transferUi && labelStatus != null) {
+                labelStatus.setText(runningStatusText());
+            }
         }
         if (miniMode) {
             // 原版：服务运行中右侧按钮就是连接数 (N)，点一下仍发送
@@ -1097,10 +1296,12 @@ public class TextSendMain {
                 buttonSend.setToolTipText("切换 服务端/客户端");
             }
             buttonStart.setToolTipText(isServerMode ? "启动/停止服务" : "连接/断开");
-            if (isServerMode) {
-                frame.setTitle("Server");
-            } else {
-                frame.setTitle("Text Send PC Client - " + VERSION);
+            if (!transferUi) {
+                if (isServerMode) {
+                    frame.setTitle("Server");
+                } else {
+                    frame.setTitle("Text Send PC Client - " + VERSION);
+                }
             }
             refreshMiniShared();
         } else {
@@ -1108,6 +1309,12 @@ public class TextSendMain {
             buttonSend.setToolTipText(null);
             buttonStart.setToolTipText(null);
             wireIpComboTooltips();
+        }
+        if (buttonBrowse != null) {
+            buttonBrowse.setEnabled(true);
+        }
+        if (buttonRemoveFiles != null) {
+            buttonRemoveFiles.setEnabled(fileTable != null && fileTable.getSelectedRowCount() > 0);
         }
         buttonRole.setEnabled(!active);
         buttonRole.setVisible(!miniMode);
@@ -1157,7 +1364,7 @@ public class TextSendMain {
         }
 
         TsServer server = new TsServer(getServerListenPort(), maxConnection, pairingMaterial,
-                count -> SwingUtilities.invokeLater(() -> onClientCount(count)));
+                count -> SwingUtilities.invokeLater(() -> onClientCount(count)), FILE_IO);
         new Thread(server, "ts-server").start();
         refreshRunningChrome();
     }
@@ -1197,6 +1404,10 @@ public class TextSendMain {
         inputShowingCount = false;
         miniShowingPin = false;
         closeQrDialog();
+        fileBusy = false;
+        resetSendQueue();
+        endTransferUi();
+        TsServer.cancelFilesCurrent();
         TsServer.stopCurrent();
         setTextResetUndo(areaMessage, "");
         setTextResetUndo(miniTextArea, "");
@@ -1263,6 +1474,7 @@ public class TextSendMain {
                         flashStatus("握手失败，连接串仍保留");
                     }
                 }));
+                peer.setFileIo(FILE_IO);
                 clientPeer = peer;
                 if (clientConnectAbort) {
                     peer.close();
@@ -1289,6 +1501,10 @@ public class TextSendMain {
         isClientConnected = false;
         clientHandshaking = false;
         sending = false;
+        fileBusy = false;
+        resetSendQueue();
+        endTransferUi();
+        cancelTransfer();
         scheduleControl.set(false);
         if (clientPeer != null) {
             clientPeer.close();
@@ -1312,8 +1528,32 @@ public class TextSendMain {
         if (sending) {
             return;
         }
+        if (pastePreviewFile != null && pastePreviewFile.isFile()) {
+            sendQueuedFiles(List.of(pastePreviewFile));
+            return;
+        }
         String text = miniMode ? miniTextArea.getText() : areaMessage.getText();
+        boolean preferText = text != null && !text.isBlank() && !inputShowingCount
+                && (miniMode || (areaMessage != null && areaMessage.isFocusOwner()));
+        if (!preferText) {
+            List<File> selected = selectedQueuedFiles();
+            if (!selected.isEmpty()) {
+                if (fileBusy) {
+                    int n = appendToSendQueue(selected);
+                    flashStatus(n > 0 ? "已追加 " + n + " 个，将依次发送" : "已在发送队列中");
+                    return;
+                }
+                sendQueuedFiles(selected);
+                return;
+            }
+        }
+        if (fileBusy) {
+            return;
+        }
         if (text == null || text.isBlank() || inputShowingCount) {
+            if (!fileQueue.isEmpty()) {
+                flashStatus("请选择要发送的文件（Ctrl+A 全选，Shift 连选）");
+            }
             return;
         }
         if (isServerMode) {
@@ -1394,6 +1634,113 @@ public class TextSendMain {
         return "未连接 — 粘贴 ts:// 后点连接";
     }
 
+    private static void flushProgressUi() {
+        boolean incoming;
+        String name;
+        long done;
+        long total;
+        double bps;
+        int seq;
+        int of;
+        synchronized (progressLock) {
+            progressPosted = false;
+            incoming = progressIncoming;
+            name = progressName;
+            done = progressDone;
+            total = progressTotal;
+            bps = speedBps;
+            seq = progressSeq;
+            of = progressOf;
+        }
+        transferUi = true;
+        int pct = total > 0 ? (int) Math.min(100, done * 100 / total) : 0;
+        String speed = bps > 0 ? fmtSpeed(bps) : "—";
+        String verb = incoming ? "接收" : "发送";
+        StringBuilder sb = new StringBuilder(verb);
+        if (seq > 0 && of > 1) {
+            sb.append(' ').append(seq).append('/').append(of);
+        }
+        if (!miniMode && name != null && !name.isEmpty()) {
+            sb.append(' ').append(shortFileName(name));
+        }
+        sb.append("  ").append(pct).append("%  ").append(speed);
+        String text = sb.toString();
+        if (miniMode && frame != null) {
+            frame.setTitle(text);
+            return;
+        }
+        if (labelStatus != null) {
+            labelStatus.setText(text);
+            String tip = total > 0 ? fmtBytes(done) + " / " + fmtBytes(total) : null;
+            if (seq > 0 && of > 1) {
+                String batch = "第 " + seq + "/" + of + " 个";
+                tip = tip == null ? batch : batch + " · " + tip;
+            }
+            labelStatus.setToolTipText(tip);
+        }
+        if (progressBar != null) {
+            if (total <= 0) {
+                progressBar.setIndeterminate(true);
+            } else {
+                progressBar.setIndeterminate(false);
+                progressBar.setValue((int) Math.min(1000, done * 1000 / total));
+            }
+            progressBar.setVisible(true);
+        }
+        if (buttonCancel != null) {
+            buttonCancel.setVisible(true);
+            buttonCancel.setToolTipText(incoming ? "取消接收" : "取消发送");
+        }
+    }
+
+    private static String shortFileName(String name) {
+        if (name.length() <= 28) {
+            return name;
+        }
+        return name.substring(0, 14) + "…" + name.substring(name.length() - 10);
+    }
+
+    private static void endTransferUi() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(TextSendMain::endTransferUi);
+            return;
+        }
+        transferUi = false;
+        synchronized (progressLock) {
+            progressPosted = false;
+            speedKey = "";
+            speedBps = 0;
+            speedMarkBytes = 0;
+        }
+        if (progressBar != null) {
+            progressBar.setIndeterminate(false);
+            progressBar.setValue(0);
+            progressBar.setVisible(false);
+        }
+        if (buttonCancel != null) {
+            buttonCancel.setVisible(false);
+        }
+        if (labelStatus != null) {
+            labelStatus.setToolTipText(null);
+            if (!miniMode) {
+                labelStatus.setText(runningStatusText());
+            }
+        }
+        if (miniMode && frame != null) {
+            frame.setTitle(isServerMode ? "Server" : "Text Send PC Client - " + VERSION);
+        }
+    }
+
+    private static String fmtSpeed(double bps) {
+        if (bps < 1024) {
+            return String.format(java.util.Locale.ROOT, "%.0f B/s", bps);
+        }
+        if (bps < 1024 * 1024) {
+            return String.format(java.util.Locale.ROOT, "%.1f KB/s", bps / 1024.0);
+        }
+        return String.format(java.util.Locale.ROOT, "%.1f MB/s", bps / (1024.0 * 1024.0));
+    }
+
     private static void flashStatus(String s) {
         if (labelStatus == null) {
             return;
@@ -1403,7 +1750,7 @@ public class TextSendMain {
             statusFlashTimer.stop();
         }
         statusFlashTimer = new Timer(1600, e -> {
-            if (labelStatus != null && !miniMode) {
+            if (labelStatus != null && !miniMode && !transferUi) {
                 labelStatus.setText(runningStatusText());
             }
         });
@@ -1433,11 +1780,21 @@ public class TextSendMain {
 
                 —— 输入 ——
                 · Ctrl+Z 撤销；Ctrl+Y 重做（也可用 Ctrl+Shift+Z）。Mac 用 Cmd。
-                · Ctrl+Enter 发送。对方确认收到后才清空，发送失败会保留原文。
+                · 文件：「浏览」左键 Java 对话框（可把文件拖进对话框，打开该文件所在文件夹）；右键用系统文件选择框。
+                · 文件按列表一个个发。发送中仍可浏览/拖入追加，队列里的会接着发。
+                · 列表里可点选、Ctrl 多选、Shift 连选、Ctrl+A 全选、Delete 移除。
+                · 选中后点「发送」。发送中浏览/拖入会追加并接着发；没选中的不会自动捎上，可再选中点发送。
+                · 对面落到「下载/TextSend」（重名自动加 (1)），不弹保存框。
+                · 图片 ≤20MB：PC 写入剪贴板可直接粘贴；更大的当文件保存。
+                · 本机 Ctrl+V 图片会先出现在输入区预览，点缩略图或「查看大图」可看原图，点「发送」才传；Backspace 清除预览。
+                · Shift+「浏览」选 1 个文件夹，按相对路径在对面重建（软链默认不跟随，列表旁可开）。进度显示 3/40。
+                · 传输中断后可再发同一文件续传（认文件头哈希，不只是同名同大小）。暂无手动选断点。
+                · 多个客户端时会提示将发给几台。
 
                 —— 快捷键 ——
                 · Ctrl+Shift+W / Ctrl+Q：退出程序
-                · Ctrl+Enter：发送
+                · Ctrl+Enter：发送（列表有选中则发文件；输入框有焦点则发文字）
+                · Ctrl+O：浏览添加文件（Java 对话框）
                 · Esc：小窗回到大窗
                 · F1：帮助
 
@@ -1451,7 +1808,7 @@ public class TextSendMain {
                 —— 配置文件 ——
                 · 优先：程序同一目录的 textsend.properties（jar / 绿色版）。
                 · 程序目录不能写时（系统安装包）：主目录下仅一份 .textsend.properties。
-                · 不建 ~/.config。保存项：uiScale、listenPort、preferMini。
+                · 不建 ~/.config。保存项：uiScale、listenPort、preferMini、followSymlinks。
                 """.formatted(VERSION);
         JTextArea area = new JTextArea(text);
         area.setEditable(false);
@@ -1469,6 +1826,1129 @@ public class TextSendMain {
 
     private static void copyText(String text) {
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void installFileDrop(JComponent c) {
+        if (c == null) {
+            return;
+        }
+        c.setTransferHandler(new TransferHandler() {
+            @Override
+            public boolean canImport(TransferSupport support) {
+                return support.isDataFlavorSupported(DataFlavor.imageFlavor)
+                        || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+                        || support.isDataFlavorSupported(DataFlavor.stringFlavor);
+            }
+
+            @Override
+            public boolean importData(TransferSupport support) {
+                try {
+                    if (support.isDataFlavorSupported(DataFlavor.imageFlavor)
+                            && support.getComponent() instanceof JTextComponent) {
+                        Object data = support.getTransferable().getTransferData(DataFlavor.imageFlavor);
+                        BufferedImage img = data instanceof BufferedImage bi ? bi
+                                : PasteUtil.toBuffered(data instanceof Image im ? im : null);
+                        if (offerPasteImage(img)) {
+                            return true;
+                        }
+                    }
+                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        List<File> files = (List<File>) support.getTransferable()
+                                .getTransferData(DataFlavor.javaFileListFlavor);
+                        enqueueFiles(new ArrayList<>(files));
+                        return true;
+                    }
+                    if (support.isDataFlavorSupported(DataFlavor.stringFlavor)
+                            && support.getComponent() instanceof JTextComponent tc) {
+                        String str = (String) support.getTransferable()
+                                .getTransferData(DataFlavor.stringFlavor);
+                        tc.replaceSelection(str);
+                        return true;
+                    }
+                } catch (Exception e) {
+                    flashStatus("拖入失败: " + e.getMessage());
+                }
+                return false;
+            }
+        });
+    }
+
+    private static void ensureFileTable() {
+        if (fileTable != null) {
+            fileTable.updateUI();
+            if (fileTable.getTableHeader() != null) {
+                fileTable.getTableHeader().updateUI();
+            }
+            if (buttonBrowse != null) {
+                buttonBrowse.updateUI();
+            }
+            if (buttonRemoveFiles != null) {
+                buttonRemoveFiles.updateUI();
+            }
+            return;
+        }
+        fileTable = new JTable(fileModel);
+        fileTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        fileTable.setRowSelectionAllowed(true);
+        fileTable.setColumnSelectionAllowed(false);
+        fileTable.getTableHeader().setReorderingAllowed(false);
+        fileTable.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
+        fileTable.setFillsViewportHeight(true);
+        fileTable.setShowHorizontalLines(true);
+        fileTable.setShowVerticalLines(false);
+        fileTable.setBackground(Color.WHITE);
+        fileTable.setForeground(TEXT);
+        fileTable.setGridColor(new Color(0xE0E0E0));
+        fileTable.setToolTipText("拖入文件显示路径。点选 / Ctrl 多选 / Shift 连选 / Ctrl+A 全选 / Delete 移除");
+        fileTable.getColumnModel().getColumn(0).setPreferredWidth(160);
+        fileTable.getColumnModel().getColumn(1).setPreferredWidth(360);
+        fileTable.getColumnModel().getColumn(2).setPreferredWidth(80);
+        fileTable.getColumnModel().getColumn(2).setMaxWidth(100);
+        DefaultTableCellRenderer pathTip = new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                           boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (row >= 0 && row < fileQueue.size()) {
+                    setToolTipText(fileQueue.get(row).getAbsolutePath());
+                } else {
+                    setToolTipText(value == null ? null : value.toString());
+                }
+                return c;
+            }
+        };
+        fileTable.setDefaultRenderer(Object.class, pathTip);
+        fileTable.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting() && buttonRemoveFiles != null) {
+                buttonRemoveFiles.setEnabled(fileTable.getSelectedRowCount() > 0);
+            }
+        });
+        InputMap im = fileTable.getInputMap(JComponent.WHEN_FOCUSED);
+        ActionMap am = fileTable.getActionMap();
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "ts-remove-files");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "ts-remove-files");
+        am.put("ts-remove-files", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                removeSelectedQueuedFiles();
+            }
+        });
+        JPopupMenu popup = new JPopupMenu();
+        popup.add(new AbstractAction("全选") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (fileTable.getRowCount() > 0) {
+                    fileTable.selectAll();
+                }
+            }
+        });
+        popup.add(new AbstractAction("移除所选") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                removeSelectedQueuedFiles();
+            }
+        });
+        popup.addSeparator();
+        popup.add(new AbstractAction("浏览添加…") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                pickAndAddFiles();
+            }
+        });
+        popup.add(new AbstractAction("系统选择…") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                pickWithSystemDialog();
+            }
+        });
+        fileTable.setComponentPopupMenu(popup);
+
+        scrollFiles = new JScrollPane(fileTable);
+        scrollFiles.setBorder(BorderFactory.createLineBorder(BORDER));
+        scrollFiles.getViewport().setBackground(Color.WHITE);
+
+        labelFileQueue = new JLabel();
+        labelFileQueue.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        labelFileQueue.setToolTipText("点击展开或收起待发列表");
+        labelFileQueue.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    setFileListExpanded(!fileListExpanded);
+                }
+            }
+        });
+        buttonBrowse = new JButton("浏览");
+        buttonBrowse.setToolTipText("左键选文件；Shift+左键选 1 个文件夹（按相对路径重建）。右键：系统文件选择框");
+        buttonBrowse.addActionListener(e -> {
+            if ((e.getModifiers() & ActionEvent.SHIFT_MASK) != 0) {
+                pickFolderTree();
+            } else {
+                pickAndAddFiles();
+            }
+        });
+        buttonBrowse.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (SwingUtilities.isRightMouseButton(e) && buttonBrowse.isEnabled()) {
+                    pickWithSystemDialog();
+                }
+            }
+        });
+        buttonRemoveFiles = new JButton("移除");
+        buttonRemoveFiles.setToolTipText("从列表去掉所选（不删磁盘上的文件）");
+        buttonRemoveFiles.addActionListener(e -> removeSelectedQueuedFiles());
+        checkFollowLinks = new JCheckBox("软链");
+        checkFollowLinks.setOpaque(false);
+        checkFollowLinks.setToolTipText("发送文件夹时跟随符号链接（默认关）");
+        checkFollowLinks.setSelected(UserConfig.isFollowSymlinks());
+        checkFollowLinks.addActionListener(e -> UserConfig.setFollowSymlinks(checkFollowLinks.isSelected()));
+
+        JPanel fileHead = new JPanel(new BorderLayout(8, 0));
+        fileHead.setOpaque(false);
+        fileHead.add(labelFileQueue, BorderLayout.WEST);
+        JPanel fileBtns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        fileBtns.setOpaque(false);
+        fileBtns.add(checkFollowLinks);
+        fileBtns.add(buttonBrowse);
+        fileBtns.add(buttonRemoveFiles);
+        fileHead.add(fileBtns, BorderLayout.EAST);
+
+        filePanel = new JPanel(new BorderLayout(0, 4));
+        filePanel.setOpaque(false);
+        filePanel.add(fileHead, BorderLayout.NORTH);
+        filePanel.add(scrollFiles, BorderLayout.CENTER);
+        refreshFileQueueLabel();
+    }
+
+    private static void setFileListExpanded(boolean expanded) {
+        if (fileListExpanded == expanded) {
+            applyFileListLayout();
+            refreshFileQueueLabel();
+            return;
+        }
+        fileListExpanded = expanded;
+        applyFileListLayout();
+        refreshFileQueueLabel();
+    }
+
+    private static void applyFileListLayout() {
+        if (miniMode || scrollMessage == null || filePanel == null || scrollFiles == null) {
+            return;
+        }
+        boolean on = fileListExpanded;
+        scrollFiles.setVisible(on);
+        if (on) {
+            if (scrollFiles.getParent() != filePanel) {
+                filePanel.add(scrollFiles, BorderLayout.CENTER);
+            }
+            scrollFiles.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(160)));
+            filePanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+            filePanel.setPreferredSize(null);
+            scrollMessage.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(120)));
+        } else {
+            filePanel.remove(scrollFiles);
+            filePanel.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(28)));
+            filePanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(32)));
+            scrollMessage.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(220)));
+        }
+        if (root != null) {
+            root.revalidate();
+            root.repaint();
+        }
+    }
+
+    private static void pickAndAddFiles() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("添加文件到待发列表（最多 " + Protocol.FILE_BATCH_MAX + " 个，不支持文件夹）");
+        chooser.setMultiSelectionEnabled(true);
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        File start = lastFileChooserDir;
+        if (start == null || !start.isDirectory()) {
+            start = FileNames.downloads().toFile();
+        }
+        if (start.isDirectory()) {
+            chooser.setCurrentDirectory(start);
+        }
+        chooser.setPreferredSize(new Dimension(UserConfig.s(800), UserConfig.s(560)));
+        installChooserFolderDrop(chooser);
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        lastFileChooserDir = chooser.getCurrentDirectory();
+        File[] picked = chooser.getSelectedFiles();
+        List<File> list = new ArrayList<>();
+        if (picked != null) {
+            for (File f : picked) {
+                list.add(f);
+            }
+        }
+        enqueueFiles(list);
+    }
+
+    private static void pickFolderTree() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("发送 1 个文件夹（对面按相对路径重建）");
+        chooser.setMultiSelectionEnabled(false);
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        File start = lastFileChooserDir;
+        if (start == null || !start.isDirectory()) {
+            start = FileNames.downloads().toFile();
+        }
+        if (start.isDirectory()) {
+            chooser.setCurrentDirectory(start);
+        }
+        chooser.setPreferredSize(new Dimension(UserConfig.s(800), UserConfig.s(560)));
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        File root = chooser.getSelectedFile();
+        if (root != null && root.getParentFile() != null) {
+            lastFileChooserDir = root.getParentFile();
+        }
+        enqueueFolder(root);
+    }
+
+    private static void enqueueFolder(File root) {
+        if (root == null || !root.isDirectory()) {
+            flashStatus("请选择文件夹");
+            return;
+        }
+        Path rootPath = root.toPath();
+        String treeName = FileNames.sanitize(root.getName());
+        EnumSet<FileVisitOption> opts = UserConfig.isFollowSymlinks()
+                ? EnumSet.of(FileVisitOption.FOLLOW_LINKS)
+                : EnumSet.noneOf(FileVisitOption.class);
+        List<File> files = new ArrayList<>();
+        List<String> rels = new ArrayList<>();
+        try {
+            Files.walkFileTree(rootPath, opts, Integer.MAX_VALUE, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
+                    if (!dir.equals(rootPath) && name.startsWith(".")) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    if (!UserConfig.isFollowSymlinks() && Files.isSymbolicLink(dir)) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (!UserConfig.isFollowSymlinks() && Files.isSymbolicLink(file)) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    String name = file.getFileName().toString();
+                    if (name.startsWith(".")) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    if (!Files.isRegularFile(file)) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    String rel = FileNames.sanitizeRelPath(rootPath.relativize(file).toString());
+                    if (rel == null) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    files.add(file.toFile());
+                    rels.add(rel);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            flashStatus("读取文件夹失败: " + e.getMessage());
+            return;
+        }
+        if (files.isEmpty()) {
+            flashStatus("文件夹是空的（已跳过隐藏文件）");
+            return;
+        }
+        ensureFileTable();
+        int added = 0;
+        int dup = 0;
+        Set<String> have = new HashSet<>();
+        for (File q : fileQueue) {
+            have.add(fileKey(q));
+        }
+        for (int i = 0; i < files.size(); i++) {
+            File f = files.get(i);
+            String key = fileKey(f);
+            if (have.contains(key)) {
+                dup++;
+                continue;
+            }
+            have.add(key);
+            fileQueue.add(f);
+            queueTree.put(key, treeName);
+            queueRel.put(key, rels.get(i));
+            File parent = f.getParentFile();
+            fileModel.addRow(new Object[]{
+                    f.getName(),
+                    parent == null ? f.getAbsolutePath() : parent.getAbsolutePath(),
+                    fmtBytes(f.length())
+            });
+            added++;
+        }
+        if (added > 0) {
+            setFileListExpanded(true);
+            if (fileBusy) {
+                appendToSendQueue(files);
+            }
+        }
+        refreshFileQueueLabel();
+        String msg = "已加入文件夹 " + treeName + "（" + added + " 个文件）";
+        if (dup > 0) {
+            msg += "，跳过重复 " + dup;
+        }
+        flashStatus(msg);
+    }
+
+    /** 把文件拖进 Java 对话框：只切换到该文件所在文件夹，显示里面的内容。 */
+    private static void installChooserFolderDrop(JFileChooser chooser) {
+        TransferHandler th = new TransferHandler() {
+            @Override
+            public boolean canImport(TransferSupport support) {
+                return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public boolean importData(TransferSupport support) {
+                try {
+                    List<File> files = (List<File>) support.getTransferable()
+                            .getTransferData(DataFlavor.javaFileListFlavor);
+                    if (files == null || files.isEmpty() || files.get(0) == null) {
+                        return false;
+                    }
+                    File f = files.get(0);
+                    File dir = f.isDirectory() ? f : f.getParentFile();
+                    if (dir == null || !dir.isDirectory()) {
+                        return false;
+                    }
+                    chooser.setCurrentDirectory(dir);
+                    lastFileChooserDir = dir;
+                    List<File> select = new ArrayList<>();
+                    for (File x : files) {
+                        if (x != null && x.isFile() && dir.equals(x.getParentFile())) {
+                            select.add(x);
+                        }
+                    }
+                    if (!select.isEmpty()) {
+                        chooser.setSelectedFiles(select.toArray(File[]::new));
+                    }
+                    return true;
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        };
+        chooser.addPropertyChangeListener(JFileChooser.DIRECTORY_CHANGED_PROPERTY, evt ->
+                SwingUtilities.invokeLater(() -> applyTransferHandlerDeep(chooser, th)));
+        chooser.addHierarchyListener(e -> {
+            if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && chooser.isShowing()) {
+                applyTransferHandlerDeep(chooser, th);
+                Window w = SwingUtilities.getWindowAncestor(chooser);
+                if (w != null) {
+                    int ww = Math.max(w.getWidth(), UserConfig.s(800));
+                    int hh = Math.max(w.getHeight(), UserConfig.s(560));
+                    w.setSize(ww, hh);
+                    w.setMinimumSize(new Dimension(UserConfig.s(640), UserConfig.s(480)));
+                    w.setLocationRelativeTo(frame);
+                }
+                if (w instanceof RootPaneContainer rpc) {
+                    applyTransferHandlerDeep(rpc.getContentPane(), th);
+                }
+            }
+        });
+        applyTransferHandlerDeep(chooser, th);
+    }
+
+    private static void applyTransferHandlerDeep(Component c, TransferHandler th) {
+        if (c instanceof JComponent jc) {
+            jc.setTransferHandler(th);
+        }
+        if (c instanceof Container box) {
+            for (Component child : box.getComponents()) {
+                applyTransferHandlerDeep(child, th);
+            }
+        }
+    }
+
+    /** 可选：系统原生文件选择框（选文件，不是只打开文件夹）。 */
+    private static void pickWithSystemDialog() {
+        FileDialog fd = new FileDialog(frame, "选择文件（系统）", FileDialog.LOAD);
+        fd.setMultipleMode(true);
+        File start = lastFileChooserDir;
+        if (start == null || !start.isDirectory()) {
+            start = FileNames.downloads().toFile();
+        }
+        if (start.isDirectory()) {
+            fd.setDirectory(start.getAbsolutePath());
+        }
+        fd.setVisible(true);
+        File[] files = fd.getFiles();
+        if (files == null || files.length == 0) {
+            return;
+        }
+        if (files[0].getParentFile() != null) {
+            lastFileChooserDir = files[0].getParentFile();
+        }
+        enqueueFiles(List.of(files));
+    }
+
+    private static void enqueueFiles(List<File> dropped) {
+        if (dropped == null || dropped.isEmpty()) {
+            return;
+        }
+        ensureFileTable();
+        boolean skippedFolder = false;
+        int dup = 0;
+        int added = 0;
+        List<Integer> newRows = new ArrayList<>();
+        List<File> justAdded = new ArrayList<>();
+        Set<String> have = new HashSet<>();
+        for (File q : fileQueue) {
+            have.add(fileKey(q));
+        }
+        for (File f : dropped) {
+            if (f == null) {
+                continue;
+            }
+            if (f.isDirectory()) {
+                skippedFolder = true;
+                continue;
+            }
+            if (!f.isFile()) {
+                continue;
+            }
+            if (fileQueue.size() >= Protocol.FILE_BATCH_MAX) {
+                flashStatus("待发列表最多 " + Protocol.FILE_BATCH_MAX + " 个");
+                break;
+            }
+            String key = fileKey(f);
+            if (have.contains(key)) {
+                dup++;
+                continue;
+            }
+            have.add(key);
+            fileQueue.add(f);
+            queueTree.remove(key);
+            queueRel.remove(key);
+            File parent = f.getParentFile();
+            fileModel.addRow(new Object[]{
+                    f.getName(),
+                    parent == null ? f.getAbsolutePath() : parent.getAbsolutePath(),
+                    fmtBytes(f.length())
+            });
+            newRows.add(fileQueue.size() - 1);
+            justAdded.add(f);
+            added++;
+        }
+        if (added > 0 && fileTable != null) {
+            fileTable.clearSelection();
+            for (int row : newRows) {
+                fileTable.addRowSelectionInterval(row, row);
+            }
+            fileTable.scrollRectToVisible(fileTable.getCellRect(newRows.get(0), 0, true));
+            setFileListExpanded(true);
+            if (!miniMode) {
+                fileTable.requestFocusInWindow();
+            }
+        }
+        refreshFileQueueLabel();
+        if (added == 0) {
+            if (skippedFolder && dup == 0) {
+                flashStatus("不支持文件夹，请选择文件");
+            } else if (dup > 0) {
+                flashStatus("已在列表中");
+            }
+            return;
+        }
+        int queued = appendToSendQueue(justAdded);
+        String msg = queued > 0 ? "已追加 " + queued + " 个，将依次发送" : "已加入 " + added + " 个文件";
+        if (skippedFolder) {
+            msg += "（已跳过文件夹）";
+        }
+        if (dup > 0) {
+            msg += "，跳过重复 " + dup;
+        }
+        if (miniMode && !fileBusy) {
+            msg += " · 回大窗可选后发送";
+        }
+        flashStatus(msg);
+    }
+
+    private static String fileKey(File f) {
+        try {
+            return f.getCanonicalPath();
+        } catch (IOException e) {
+            return f.getAbsolutePath();
+        }
+    }
+
+    /** 同一轮发送里，文件夹名相同算一批；扁文件共用空串。须持有 sendLock。 */
+    private static String sendGroupKey(File f) {
+        String t = queueTree.get(fileKey(f));
+        return t == null || t.isBlank() ? "" : t;
+    }
+
+    /** 须持有 sendLock。返回 [当前序号(从1), 这一批总数]。 */
+    private static int[] sendSeqOfLocked(File current) {
+        String g = sendGroupKey(current);
+        int finished = sendDoneByTree.getOrDefault(g, 0);
+        int remain = 0;
+        for (File r : sendRemaining) {
+            if (g.equals(sendGroupKey(r))) {
+                remain++;
+            }
+        }
+        int seq = finished + 1;
+        return new int[]{seq, seq + remain};
+    }
+
+    private static void resetSendQueue() {
+        synchronized (sendLock) {
+            sendRemaining.clear();
+            currentSendingFile = null;
+            sendDoneByTree.clear();
+        }
+    }
+
+    /** 把文件接到正在发送的队列末尾（已在传或已排队的跳过）。返回新追加个数。 */
+    private static int appendToSendQueue(List<File> files) {
+        if (files == null || files.isEmpty()) {
+            return 0;
+        }
+        int n = 0;
+        synchronized (sendLock) {
+            if (!fileBusy) {
+                return 0;
+            }
+            Set<String> have = new HashSet<>();
+            if (currentSendingFile != null) {
+                have.add(fileKey(currentSendingFile));
+            }
+            for (File q : sendRemaining) {
+                have.add(fileKey(q));
+            }
+            for (File f : files) {
+                if (f == null) {
+                    continue;
+                }
+                String k = fileKey(f);
+                if (have.contains(k)) {
+                    continue;
+                }
+                sendRemaining.add(f);
+                have.add(k);
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static void dropFromSendQueue(File f) {
+        if (f == null) {
+            return;
+        }
+        String k = fileKey(f);
+        synchronized (sendLock) {
+            sendRemaining.removeIf(x -> k.equals(fileKey(x)));
+        }
+    }
+
+    private static List<File> selectedQueuedFiles() {
+        List<File> out = new ArrayList<>();
+        if (fileTable == null || fileQueue.isEmpty()) {
+            return out;
+        }
+        int[] rows = fileTable.getSelectedRows();
+        for (int r : rows) {
+            int i = fileTable.convertRowIndexToModel(r);
+            if (i >= 0 && i < fileQueue.size()) {
+                out.add(fileQueue.get(i));
+            }
+        }
+        return out;
+    }
+
+    private static void removeSelectedQueuedFiles() {
+        if (fileTable == null) {
+            return;
+        }
+        int[] rows = fileTable.getSelectedRows();
+        if (rows.length == 0) {
+            return;
+        }
+        List<Integer> modelRows = new ArrayList<>();
+        for (int r : rows) {
+            modelRows.add(fileTable.convertRowIndexToModel(r));
+        }
+        modelRows.sort((a, b) -> b - a);
+        File sending = currentSendingFile;
+        String sendingKey = sending == null ? null : fileKey(sending);
+        boolean skippedSending = false;
+        for (int i : modelRows) {
+            if (i < 0 || i >= fileQueue.size()) {
+                continue;
+            }
+            File f = fileQueue.get(i);
+            if (sendingKey != null && sendingKey.equals(fileKey(f))) {
+                skippedSending = true;
+                continue;
+            }
+            dropFromSendQueue(f);
+            queueTree.remove(fileKey(f));
+            queueRel.remove(fileKey(f));
+            fileQueue.remove(i);
+            fileModel.removeRow(i);
+        }
+        refreshFileQueueLabel();
+        if (fileQueue.isEmpty()) {
+            setFileListExpanded(false);
+        }
+        refreshRunningChrome();
+        if (skippedSending) {
+            flashStatus("正在发送的文件不能移除，可点取消");
+        }
+    }
+
+    private static void removeQueued(List<File> sent) {
+        if (sent == null || sent.isEmpty()) {
+            return;
+        }
+        Set<String> keys = new HashSet<>();
+        for (File f : sent) {
+            keys.add(fileKey(f));
+        }
+        for (int i = fileQueue.size() - 1; i >= 0; i--) {
+            if (keys.contains(fileKey(fileQueue.get(i)))) {
+                File gone = fileQueue.remove(i);
+                queueTree.remove(fileKey(gone));
+                queueRel.remove(fileKey(gone));
+                fileModel.removeRow(i);
+            }
+        }
+        refreshFileQueueLabel();
+        if (fileQueue.isEmpty()) {
+            setFileListExpanded(false);
+        }
+    }
+
+    private static void refreshFileQueueLabel() {
+        if (labelFileQueue == null) {
+            return;
+        }
+        String arrow = fileListExpanded ? "▼ " : "▶ ";
+        labelFileQueue.setText(arrow + "待发文件（" + fileQueue.size()
+                + (queueTree.isEmpty() ? "/" + Protocol.FILE_BATCH_MAX : "") + "）");
+    }
+
+    private static void sendQueuedFiles(List<File> files) {
+        if (files == null || files.isEmpty()) {
+            return;
+        }
+        if (fileBusy) {
+            int n = appendToSendQueue(files);
+            flashStatus(n > 0 ? "已追加 " + n + " 个，将依次发送" : "已在发送队列中");
+            return;
+        }
+        if (sending) {
+            flashStatus("正在发送");
+            return;
+        }
+        if (!readyToSend()) {
+            return;
+        }
+        boolean treeBatch = false;
+        for (File f : files) {
+            if (queueTree.containsKey(fileKey(f))) {
+                treeBatch = true;
+                break;
+            }
+        }
+        if (!treeBatch && files.size() > Protocol.FILE_BATCH_MAX) {
+            files = new ArrayList<>(files.subList(0, Protocol.FILE_BATCH_MAX));
+            flashStatus("一次最多 " + Protocol.FILE_BATCH_MAX + " 个，已截取前 " + Protocol.FILE_BATCH_MAX + " 个");
+        }
+        int peers = 1;
+        if (isServerMode) {
+            peers = TsServer.aliveCountCurrent();
+            if (peers < 0) {
+                flashStatus("服务未运行");
+                return;
+            }
+            if (peers == 0) {
+                flashStatus("没有已连接的客户端");
+                return;
+            }
+            if (peers > 1) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("将发给 ").append(peers).append(" 台已连接设备。\n\n");
+                int show = Math.min(files.size(), 8);
+                for (int i = 0; i < show; i++) {
+                    sb.append("· ").append(files.get(i).getName()).append('\n');
+                }
+                if (files.size() > 8) {
+                    sb.append("… 共 ").append(files.size()).append(" 个文件\n");
+                }
+                sb.append("\n对面保存到「下载/").append(FileNames.FOLDER)
+                        .append("」；较小的图片会进剪贴板。");
+                int r = JOptionPane.showConfirmDialog(frame, sb.toString(), "发送文件",
+                        JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+                if (r != JOptionPane.OK_OPTION) {
+                    return;
+                }
+            }
+        }
+        cancelFileSend.set(false);
+        synchronized (sendLock) {
+            sendRemaining.clear();
+            sendRemaining.addAll(files);
+            currentSendingFile = null;
+            sendDoneByTree.clear();
+            fileBusy = true;
+        }
+        refreshRunningChrome();
+        new Thread(() -> {
+            int ok = 0;
+            String err = null;
+            List<File> done = new ArrayList<>();
+            try {
+                sendMore:
+                for (;;) {
+                    for (;;) {
+                        File f;
+                        synchronized (sendLock) {
+                            if (cancelFileSend.get()) {
+                                sendRemaining.clear();
+                                currentSendingFile = null;
+                                break sendMore;
+                            }
+                            if (sendRemaining.isEmpty()) {
+                                currentSendingFile = null;
+                                break;
+                            }
+                            f = sendRemaining.remove(0);
+                            currentSendingFile = f;
+                        }
+                        Path path = f.toPath();
+                        String key = fileKey(f);
+                        String tree = queueTree.get(key);
+                        String rel = queueRel.get(key);
+                        int seq;
+                        int of;
+                        synchronized (sendLock) {
+                            int[] so = sendSeqOfLocked(f);
+                            seq = so[0];
+                            of = so[1];
+                        }
+                        if (isServerMode) {
+                            int n = TsServer.sendFileToAllCurrent(path, cancelFileSend::get, tree, rel, seq, of);
+                            if (n < 0) {
+                                err = "服务未运行";
+                                break sendMore;
+                            }
+                            if (n == 0) {
+                                err = "没有已连接的客户端";
+                                break sendMore;
+                            }
+                        } else {
+                            TsPeer peer = clientPeer;
+                            if (peer == null || !peer.isAlive()) {
+                                err = "尚未握手或已断开";
+                                break sendMore;
+                            }
+                            peer.sendFile(path, cancelFileSend::get, tree, rel, seq, of);
+                        }
+                        synchronized (sendLock) {
+                            sendDoneByTree.merge(sendGroupKey(f), 1, Integer::sum);
+                        }
+                        done.add(f);
+                        ok++;
+                        final File sentFile = f;
+                        SwingUtilities.invokeLater(() -> removeQueued(List.of(sentFile)));
+                    }
+                    synchronized (sendLock) {
+                        if (cancelFileSend.get()) {
+                            sendRemaining.clear();
+                            currentSendingFile = null;
+                            break sendMore;
+                        }
+                        if (!sendRemaining.isEmpty()) {
+                            continue sendMore;
+                        }
+                        currentSendingFile = null;
+                        fileBusy = false;
+                        break sendMore;
+                    }
+                }
+                if (cancelFileSend.get() && err == null) {
+                    err = "已取消";
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                String m = e.getMessage();
+                if (m != null && m.contains("cancelled")) {
+                    err = "已取消";
+                } else {
+                    err = "发送失败: " + m;
+                }
+            } finally {
+                if (err != null || cancelFileSend.get()) {
+                    synchronized (sendLock) {
+                        currentSendingFile = null;
+                        sendRemaining.clear();
+                        fileBusy = false;
+                    }
+                }
+            }
+            final int sent = ok;
+            final String fail = err;
+            final List<File> sentFiles = done;
+            SwingUtilities.invokeLater(() -> {
+                endTransferUi();
+                removeQueued(sentFiles);
+                if (pastePreviewFile != null) {
+                    String pk = fileKey(pastePreviewFile);
+                    for (File sf : sentFiles) {
+                        if (pk.equals(fileKey(sf))) {
+                            clearPastePreview();
+                            break;
+                        }
+                    }
+                }
+                refreshRunningChrome();
+                if (fail != null && sent == 0) {
+                    flashStatus(fail);
+                } else if (fail != null) {
+                    flashStatus("已发送 " + sent + " 个，" + fail);
+                } else {
+                    flashStatus("已发送 " + sent + " 个文件");
+                }
+            });
+        }, "ts-send-file").start();
+    }
+
+    private static boolean readyToSend() {
+        if (isServerMode) {
+            if (!isServerRunning()) {
+                flashStatus("服务未运行");
+                return false;
+            }
+        } else if (!isClientConnected || clientPeer == null || !clientPeer.isAlive()) {
+            flashStatus("尚未握手或已断开");
+            return false;
+        }
+        return true;
+    }
+
+    private static void ensurePastePreview() {
+        if (pastePreview != null) {
+            return;
+        }
+        pastePreviewThumb = new JLabel();
+        pastePreviewThumb.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        pastePreviewThumb.setToolTipText("点击查看大图");
+        pastePreviewThumb.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    showPastePreviewLarge();
+                }
+            }
+        });
+        pastePreviewText = new JLabel(" ");
+        pastePreviewText.setForeground(MUTED);
+        JButton view = new JButton("查看大图");
+        view.setMargin(new Insets(0, 6, 0, 6));
+        view.addActionListener(e -> showPastePreviewLarge());
+        JButton clear = new JButton("清除");
+        clear.setMargin(new Insets(0, 6, 0, 6));
+        clear.addActionListener(e -> clearPastePreview());
+        JPanel east = new JPanel();
+        east.setOpaque(false);
+        east.setLayout(new BoxLayout(east, BoxLayout.X_AXIS));
+        east.add(view);
+        east.add(Box.createHorizontalStrut(4));
+        east.add(clear);
+        pastePreview = new JPanel(new BorderLayout(8, 0));
+        pastePreview.setOpaque(false);
+        pastePreview.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(BORDER),
+                new EmptyBorder(4, 6, 4, 6)));
+        pastePreview.add(pastePreviewThumb, BorderLayout.WEST);
+        pastePreview.add(pastePreviewText, BorderLayout.CENTER);
+        pastePreview.add(east, BorderLayout.EAST);
+        pastePreview.setVisible(false);
+        pastePreview.setFocusable(true);
+        pastePreview.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(72)));
+        pastePreview.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                pastePreview.requestFocusInWindow();
+            }
+        });
+        InputMap pim = pastePreview.getInputMap(JComponent.WHEN_FOCUSED);
+        ActionMap pam = pastePreview.getActionMap();
+        pim.put(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "ts-clear-paste");
+        pam.put("ts-clear-paste", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                clearPastePreview();
+            }
+        });
+    }
+
+    private static void installSmartPaste(JTextComponent area) {
+        if (area == null) {
+            return;
+        }
+        int menu = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+        InputMap im = area.getInputMap();
+        ActionMap am = area.getActionMap();
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_V, menu), "ts-paste-smart");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "ts-paste-smart");
+        am.put("ts-paste-smart", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (offerPasteImage(PasteUtil.getClipboardImage())) {
+                    return;
+                }
+                area.paste();
+            }
+        });
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "ts-backspace");
+        am.put("ts-backspace", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (pastePreview != null && pastePreview.isVisible() && pastePreviewFile != null) {
+                    clearPastePreview();
+                    return;
+                }
+                Action def = am.get(DefaultEditorKit.deletePrevCharAction);
+                if (def != null) {
+                    def.actionPerformed(e);
+                }
+            }
+        });
+    }
+
+    private static boolean offerPasteImage(BufferedImage img) {
+        if (img == null) {
+            return false;
+        }
+        try {
+            File tmp = File.createTempFile("textsend-paste-", ".png");
+            tmp.deleteOnExit();
+            ImageIO.write(img, "png", tmp);
+            pastePreviewFile = tmp;
+            pastePreviewImage = img;
+            if (pastePreviewDialog != null) {
+                pastePreviewDialog.dispose();
+                pastePreviewDialog = null;
+            }
+            ensurePastePreview();
+            int w = img.getWidth();
+            int h = img.getHeight();
+            int nh = UserConfig.s(48);
+            int nw = Math.max(1, w * nh / Math.max(1, h));
+            pastePreviewThumb.setIcon(new ImageIcon(img.getScaledInstance(nw, nh, Image.SCALE_SMOOTH)));
+            pastePreviewText.setText("图片预览 " + w + "×" + h + "  ·  点发送才传，可查看大图");
+            pastePreview.setVisible(true);
+            if (root != null) {
+                root.revalidate();
+                root.repaint();
+            }
+            flashStatus("图片已放入输入区，点发送才传");
+            return true;
+        } catch (Exception e) {
+            flashStatus("无法预览剪贴板图片: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static void showPastePreviewLarge() {
+        BufferedImage img = pastePreviewImage;
+        if (img == null && pastePreviewFile != null && pastePreviewFile.isFile()) {
+            try {
+                img = ImageIO.read(pastePreviewFile);
+                pastePreviewImage = img;
+            } catch (IOException e) {
+                flashStatus("无法打开大图: " + e.getMessage());
+                return;
+            }
+        }
+        if (img == null) {
+            return;
+        }
+        if (pastePreviewDialog != null && pastePreviewDialog.isDisplayable()) {
+            pastePreviewDialog.toFront();
+            return;
+        }
+        JLabel pic = new JLabel(new ImageIcon(img));
+        pic.setHorizontalAlignment(SwingConstants.CENTER);
+        JScrollPane sp = new JScrollPane(pic);
+        sp.getVerticalScrollBar().setUnitIncrement(24);
+        sp.getHorizontalScrollBar().setUnitIncrement(24);
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        int pad = 48;
+        int w = Math.min(img.getWidth() + pad, (int) (screen.width * 0.9));
+        int h = Math.min(img.getHeight() + pad, (int) (screen.height * 0.85));
+        sp.setPreferredSize(new Dimension(Math.max(w, 320), Math.max(h, 240)));
+        pastePreviewDialog = new JDialog(frame, "查看大图  " + img.getWidth() + "×" + img.getHeight(), false);
+        pastePreviewDialog.setContentPane(sp);
+        pastePreviewDialog.pack();
+        pastePreviewDialog.setLocationRelativeTo(frame);
+        pastePreviewDialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        JRootPane rp = pastePreviewDialog.getRootPane();
+        rp.registerKeyboardAction(e -> pastePreviewDialog.dispose(),
+                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                JComponent.WHEN_IN_FOCUSED_WINDOW);
+        pastePreviewDialog.setVisible(true);
+    }
+
+    private static void clearPastePreview() {
+        pastePreviewFile = null;
+        pastePreviewImage = null;
+        if (pastePreviewDialog != null) {
+            pastePreviewDialog.dispose();
+            pastePreviewDialog = null;
+        }
+        if (pastePreview != null) {
+            pastePreview.setVisible(false);
+            if (pastePreviewThumb != null) {
+                pastePreviewThumb.setIcon(null);
+            }
+        }
+        if (root != null) {
+            root.revalidate();
+            root.repaint();
+        }
+    }
+
+    private static void cancelTransfer() {
+        cancelFileSend.set(true);
+        if (isServerMode) {
+            TsServer.cancelFilesCurrent();
+        } else if (clientPeer != null) {
+            clientPeer.cancelFile();
+        }
+    }
+
+    private static String fmtBytes(long n) {
+        if (n < 1024) {
+            return n + " B";
+        }
+        if (n < 1024 * 1024) {
+            return String.format(java.util.Locale.ROOT, "%.1f KB", n / 1024.0);
+        }
+        if (n < 1024L * 1024 * 1024) {
+            return String.format(java.util.Locale.ROOT, "%.1f MB", n / (1024.0 * 1024));
+        }
+        return String.format(java.util.Locale.ROOT, "%.2f GB", n / (1024.0 * 1024 * 1024));
     }
 
     private static void closeQrDialog() {

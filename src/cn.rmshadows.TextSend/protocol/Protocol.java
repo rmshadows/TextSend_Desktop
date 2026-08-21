@@ -36,6 +36,14 @@ public final class Protocol {
     public static final int PIN_FAIL_MAX = 5;
     public static final int PIN_LOCK_MS = 60_000;
 
+    public static final int FILE_ID_LEN = 16;
+    public static final int FILE_CHUNK = 128 * 1024;
+    public static final int FILE_CHUNK_MAX = 256 * 1024;
+    public static final int FILE_BATCH_MAX = 50;
+    public static final long CLIPBOARD_IMAGE_MAX = 20L * 1024 * 1024;
+    public static final int FILE_ACCEPT_TIMEOUT_MS = 12_000;
+    public static final long FILE_SIZE_MAX = 1024L * 1024 * 1024 * 1024; // 1 TiB  sanity
+
     public static final String HKDF_INFO_PIN_PREFIX = "textsend-v1|pin=";
     public static final String HKDF_INFO_PSK = "textsend-v1|psk";
     public static final String CURVE = "P-256";

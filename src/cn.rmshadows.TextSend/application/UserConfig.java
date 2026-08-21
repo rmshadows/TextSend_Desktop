@@ -23,6 +23,7 @@ public final class UserConfig {
     private static float uiScale = 1.0f;
     private static int listenPort = 54300;
     private static boolean preferMini = false;
+    private static boolean followSymlinks = false;
 
     private UserConfig() {
     }
@@ -85,6 +86,7 @@ public final class UserConfig {
             uiScale = parseScale(p.getProperty("uiScale", "1.0"));
             listenPort = Integer.parseInt(p.getProperty("listenPort", "54300"));
             preferMini = Boolean.parseBoolean(p.getProperty("preferMini", "false"));
+            followSymlinks = Boolean.parseBoolean(p.getProperty("followSymlinks", "false"));
         } catch (Exception e) {
             System.err.println("读取配置失败: " + e.getMessage());
         }
@@ -100,6 +102,7 @@ public final class UserConfig {
             p.setProperty("uiScale", Float.toString(uiScale));
             p.setProperty("listenPort", Integer.toString(listenPort));
             p.setProperty("preferMini", Boolean.toString(preferMini));
+            p.setProperty("followSymlinks", Boolean.toString(followSymlinks));
             try (OutputStream out = Files.newOutputStream(FILE)) {
                 p.store(out, "TextSend Desktop");
             }
@@ -162,6 +165,15 @@ public final class UserConfig {
 
     public static void setPreferMini(boolean mini) {
         preferMini = mini;
+        save();
+    }
+
+    public static boolean isFollowSymlinks() {
+        return followSymlinks;
+    }
+
+    public static void setFollowSymlinks(boolean v) {
+        followSymlinks = v;
         save();
     }
 
