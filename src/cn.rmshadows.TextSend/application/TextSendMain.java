@@ -72,7 +72,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.42";
+    public static final String VERSION = "5.0.53";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -232,7 +232,7 @@ public class TextSendMain {
     private static JDialog pastePreviewDialog;
     private static JCheckBox checkFollowLinks;
     private static final DefaultTableModel fileModel = new DefaultTableModel(
-            new Object[]{"文件名", "所在路径", "大小"}, 0) {
+            new Object[]{"序号", "文件名", "所在路径", "大小"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -261,6 +261,8 @@ public class TextSendMain {
     private static Timer scaleRebuildTimer;
     private static Timer statusFlashTimer;
     private static JDialog qrDialog;
+    /** 点「二维码」手动打开后，有客户端连上也不自动关。启动时弹出的二维码会在连上后关掉。 */
+    private static boolean qrKeepOpen;
 
     public static int getServerListenPort() {
         return Integer.parseInt(serverListenPort);
@@ -275,11 +277,13 @@ public class TextSendMain {
     }
 
     public static void main(String[] args) throws SocketException {
+        LinuxWmClass.initIfNeeded();
         UserConfig.load();
         serverListenPort = String.valueOf(UserConfig.getListenPort());
         miniMode = UserConfig.isPreferMini();
         preferIpAddr = getIP() + ":" + serverListenPort;
         SwingUtilities.invokeLater(() -> {
+            AppIcons.applyToTaskbar();
             applyLookAndFeelForMode();
             buildUi(true);
         });
@@ -413,7 +417,10 @@ public class TextSendMain {
             }
         });
         buttonFile.addActionListener(e -> pickAndAddFiles());
-        buttonQr.addActionListener(e -> showQr());
+        buttonQr.addActionListener(e -> {
+            qrKeepOpen = true;
+            showQr();
+        });
 
         if (server) {
             wireServerStartButton();
@@ -733,6 +740,7 @@ public class TextSendMain {
             frame.dispose();
         }
         frame = new JFrame();
+        AppIcons.applyTo(frame);
         frame.setDefaultCloseOperation(miniMode ? JFrame.DO_NOTHING_ON_CLOSE : JFrame.EXIT_ON_CLOSE);
         // 小窗：不要窗口管理器的系统标题栏，只留 Metal 自己画的细标题栏
         frame.setUndecorated(miniMode);
@@ -1178,38 +1186,18 @@ public class TextSendMain {
                 + key + "</body></html>";
     }
 
-    /** 小窗共用区：对齐原版 — 未启动放 IP combo；启动后换成 scroll+textArea（PIN / 输入） */
+    /** 小窗共用区：服务端始终可换 IP，二维码/连接串跟着变 */
     private static void refreshMiniShared() {
         if (!miniMode || miniPanelText == null) {
             return;
         }
         miniPanelText.removeAll();
         if (isServerMode) {
-            if (!isServerRunning()) {
-                miniShowingPin = false;
-                comboIps.setBounds(0, 0, 122, 30);
-                comboIps.setEnabled(true);
-                wireIpComboTooltips();
-                miniPanelText.add(comboIps);
-            } else {
-                miniScroll.setBounds(0, 0, 122, 30);
-                if (connectedClients == 0) {
-                    miniShowingPin = true;
-                    miniTextArea.setEditable(false);
-                    setTextResetUndo(miniTextArea, pairingMaterial != null ? pairingMaterial.pin : "");
-                    miniTextArea.setToolTipText("点击复制完整连接串 ts://…");
-                    miniTextArea.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-                } else {
-                    if (miniShowingPin) {
-                        setTextResetUndo(miniTextArea, "");
-                        miniShowingPin = false;
-                    }
-                    miniTextArea.setEditable(true);
-                    miniTextArea.setToolTipText(null);
-                    miniTextArea.setCursor(Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR));
-                }
-                miniPanelText.add(miniScroll);
-            }
+            comboIps.setBounds(0, 0, 122, 30);
+            comboIps.setEnabled(true);
+            wireIpComboTooltips();
+            miniPanelText.add(comboIps);
+            miniShowingPin = false;
         } else {
             // 客户端小窗是 400×300 大文本区，布局在 applyOriginalClientMini 已搭好
             miniShowingPin = false;
@@ -1247,8 +1235,30 @@ public class TextSendMain {
             comboIps.addActionListener(e -> {
                 Object s = comboIps.getSelectedItem();
                 comboIps.setToolTipText(s == null ? null : s.toString());
+                onAdvertiseIpChanged();
             });
         }
+    }
+
+    /** 服务已启动时换网卡 IP：连接串和已打开的二维码跟着变（监听仍是 0.0.0.0）。 */
+    private static void onAdvertiseIpChanged() {
+        if (!isServerMode || !isServerRunning() || pairingMaterial == null || comboIps == null) {
+            return;
+        }
+        String ip = (String) comboIps.getSelectedItem();
+        if (ip == null || ip.isBlank()) {
+            return;
+        }
+        String uri = pairingMaterial.toUri(ip, getServerListenPort());
+        if (uri.equals(lastConnectUri)) {
+            return;
+        }
+        lastConnectUri = uri;
+        System.out.println("Log: URI=" + lastConnectUri);
+        if (qrDialog != null && qrDialog.isVisible()) {
+            showQr();
+        }
+        flashStatus("二维码已换成 " + ip);
     }
 
     private static void refreshRunningChrome() {
@@ -1319,7 +1329,7 @@ public class TextSendMain {
         buttonRole.setEnabled(!active);
         buttonRole.setVisible(!miniMode);
         fieldPort.setEnabled(isServerMode && !isServerRunning());
-        comboIps.setEnabled(isServerMode && !isServerRunning());
+        comboIps.setEnabled(isServerMode);
         toggleMini.setSelected(miniMode);
     }
 
@@ -1359,6 +1369,7 @@ public class TextSendMain {
         copyText(lastConnectUri);
         flashStatus("已复制完整连接串 ts://…");
 
+        qrKeepOpen = false;
         if (showQrImg) {
             showQr();
         }
@@ -1375,6 +1386,9 @@ public class TextSendMain {
         // 首次有客户端连上：清空 PIN，共用区改输入
         if (miniMode && prev == 0 && count > 0) {
             miniShowingPin = true; // 让 refreshMiniShared 走清空分支
+        }
+        if (prev == 0 && count > 0 && !qrKeepOpen) {
+            closeQrDialog();
         }
         refreshRunningChrome();
     }
@@ -1764,6 +1778,7 @@ public class TextSendMain {
 
                 —— 服务端 ——
                 · 选择网卡 IP 和端口，点「启动」。
+                · 启动后仍可换 IP，二维码和连接串会跟着变，不用停服务。
                 · 左键启动：最多 1 个客户端，并打开二维码。
                 · 中键启动：最多 7 个客户端。
                 · 右键启动：最多 1 个客户端，不弹二维码。
@@ -1774,6 +1789,11 @@ public class TextSendMain {
                 · 粘贴连接串 ts://IP/k... 后点「连接」。端口可省略，默认 54300。
                 · 不要只填 IP。PIN 路径用 8 位短码，扫码用长密钥。
                 · 握手成功后才清空输入框；失败或点断开则保留连接串。
+
+                —— 手机连不上（安卓 14） ——
+                · 电脑已「接入 TCP」却超时 0/8：多半是手机网络加速，不是 PIN。
+                · 请对方开飞行模式后再开 Wi‑Fi，或关掉智能双通道 / 游戏加速。
+                · 本机不要让同一网段同时挂在有线和 USB 网卡上。
 
                 —— 小窗 ——
                 · 点「置顶小窗」进入紧凑窗；Esc 回到大窗。
@@ -1787,7 +1807,7 @@ public class TextSendMain {
                 · 对面落到「下载/TextSend」（重名自动加 (1)），不弹保存框。
                 · 图片 ≤20MB：PC 写入剪贴板可直接粘贴；更大的当文件保存。
                 · 本机 Ctrl+V 图片会先出现在输入区预览，点缩略图或「查看大图」可看原图，点「发送」才传；Backspace 清除预览。
-                · Shift+「浏览」选 1 个文件夹，按相对路径在对面重建（软链默认不跟随，列表旁可开）。进度显示 3/40。
+                · Shift+「浏览」打勾选多个文件夹，按相对路径在对面重建（软链默认不跟随，列表旁可开）。隐藏目录（如 .logger）会带上。进度显示 3/40。
                 · 传输中断后可再发同一文件续传（认文件头哈希，不只是同名同大小）。暂无手动选断点。
                 · 多个客户端时会提示将发给几台。
 
@@ -1803,7 +1823,8 @@ public class TextSendMain {
                 · 范围 50%%–300%%，立刻写入配置文件。
 
                 —— 二维码 ——
-                · 启动服务后可点「二维码」，在窗口内显示，无需浏览器。
+                · 左键启动会弹出二维码；有客户端连上后自动关闭。
+                · 点「二维码」手动打开则保持显示，连上也不关。Esc 关闭。
 
                 —— 配置文件 ——
                 · 优先：程序同一目录的 textsend.properties（jar / 绿色版）。
@@ -1901,10 +1922,23 @@ public class TextSendMain {
         fileTable.setForeground(TEXT);
         fileTable.setGridColor(new Color(0xE0E0E0));
         fileTable.setToolTipText("拖入文件显示路径。点选 / Ctrl 多选 / Shift 连选 / Ctrl+A 全选 / Delete 移除");
-        fileTable.getColumnModel().getColumn(0).setPreferredWidth(160);
-        fileTable.getColumnModel().getColumn(1).setPreferredWidth(360);
-        fileTable.getColumnModel().getColumn(2).setPreferredWidth(80);
-        fileTable.getColumnModel().getColumn(2).setMaxWidth(100);
+        fileTable.getColumnModel().getColumn(0).setPreferredWidth(48);
+        fileTable.getColumnModel().getColumn(0).setMaxWidth(64);
+        fileTable.getColumnModel().getColumn(0).setMinWidth(40);
+        fileTable.getColumnModel().getColumn(1).setPreferredWidth(160);
+        fileTable.getColumnModel().getColumn(2).setPreferredWidth(360);
+        fileTable.getColumnModel().getColumn(3).setPreferredWidth(80);
+        fileTable.getColumnModel().getColumn(3).setMaxWidth(100);
+        DefaultTableCellRenderer idxTip = new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                           boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                setHorizontalAlignment(SwingConstants.CENTER);
+                setToolTipText(null);
+                return c;
+            }
+        };
         DefaultTableCellRenderer pathTip = new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
@@ -1919,6 +1953,7 @@ public class TextSendMain {
             }
         };
         fileTable.setDefaultRenderer(Object.class, pathTip);
+        fileTable.getColumnModel().getColumn(0).setCellRenderer(idxTip);
         fileTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting() && buttonRemoveFiles != null) {
                 buttonRemoveFiles.setEnabled(fileTable.getSelectedRowCount() > 0);
@@ -1980,7 +2015,7 @@ public class TextSendMain {
             }
         });
         buttonBrowse = new JButton("浏览");
-        buttonBrowse.setToolTipText("左键选文件；Shift+左键选 1 个文件夹（按相对路径重建）。右键：系统文件选择框");
+        buttonBrowse.setToolTipText("左键选文件；Shift+左键打勾选多个文件夹（按相对路径重建）。右键：系统文件选择框");
         buttonBrowse.addActionListener(e -> {
             if ((e.getModifiers() & ActionEvent.SHIFT_MASK) != 0) {
                 pickFolderTree();
@@ -2043,10 +2078,10 @@ public class TextSendMain {
             if (scrollFiles.getParent() != filePanel) {
                 filePanel.add(scrollFiles, BorderLayout.CENTER);
             }
-            scrollFiles.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(160)));
+            scrollFiles.setPreferredSize(new Dimension(UserConfig.s(640), listHeight()));
             filePanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
             filePanel.setPreferredSize(null);
-            scrollMessage.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(120)));
+            scrollMessage.setPreferredSize(new Dimension(UserConfig.s(640), Math.max(UserConfig.s(90), listHeight() / 2)));
         } else {
             filePanel.remove(scrollFiles);
             filePanel.setPreferredSize(new Dimension(UserConfig.s(640), UserConfig.s(28)));
@@ -2056,6 +2091,36 @@ public class TextSendMain {
         if (root != null) {
             root.revalidate();
             root.repaint();
+        }
+    }
+
+    private static int listHeight() {
+        int avail = 0;
+        if (filePanel != null && filePanel.getParent() != null) {
+            avail = filePanel.getParent().getHeight();
+        }
+        if (avail <= 0 && frame != null) {
+            avail = Math.max(0, frame.getHeight() - UserConfig.s(200));
+        }
+        if (avail <= 0) {
+            return UserConfig.s(220);
+        }
+        return Math.max(UserConfig.s(140), avail / 2);
+    }
+
+    private static Object[] queueRow(File f) {
+        File parent = f.getParentFile();
+        return new Object[]{
+                fileQueue.size(),
+                f.getName(),
+                parent == null ? f.getAbsolutePath() : parent.getAbsolutePath(),
+                fmtBytes(f.length())
+        };
+    }
+
+    private static void renumberFileRows() {
+        for (int i = 0; i < fileModel.getRowCount(); i++) {
+            fileModel.setValueAt(i + 1, i, 0);
         }
     }
 
@@ -2088,32 +2153,59 @@ public class TextSendMain {
     }
 
     private static void pickFolderTree() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("发送 1 个文件夹（对面按相对路径重建）");
-        chooser.setMultiSelectionEnabled(false);
-        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         File start = lastFileChooserDir;
         if (start == null || !start.isDirectory()) {
             start = FileNames.downloads().toFile();
         }
-        if (start.isDirectory()) {
-            chooser.setCurrentDirectory(start);
+        if (start == null || !start.isDirectory()) {
+            start = new File(System.getProperty("user.home", "."));
         }
-        chooser.setPreferredSize(new Dimension(UserConfig.s(800), UserConfig.s(560)));
-        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+        List<File> dirs = FolderPickDialog.show(frame, start);
+        if (dirs == null || dirs.isEmpty()) {
             return;
         }
-        File root = chooser.getSelectedFile();
-        if (root != null && root.getParentFile() != null) {
-            lastFileChooserDir = root.getParentFile();
+        File first = dirs.get(0);
+        if (first.getParentFile() != null) {
+            lastFileChooserDir = first.getParentFile();
         }
-        enqueueFolder(root);
+        enqueueFolders(dirs);
+    }
+
+    private static void enqueueFolders(List<File> dirs) {
+        if (dirs == null || dirs.isEmpty()) {
+            return;
+        }
+        int trees = 0;
+        int files = 0;
+        for (File dir : dirs) {
+            int n = enqueueFolder(dir, false);
+            if (n > 0) {
+                trees++;
+                files += n;
+            }
+        }
+        if (files == 0) {
+            flashStatus("文件夹是空的或无法读取");
+            return;
+        }
+        if (trees == 1) {
+            flashStatus("已加入文件夹 " + FileNames.sanitize(dirs.get(0).getName()) + "（" + files + " 个文件）");
+        } else {
+            flashStatus("已加入 " + trees + " 个文件夹（" + files + " 个文件）");
+        }
     }
 
     private static void enqueueFolder(File root) {
+        enqueueFolder(root, true);
+    }
+
+    /** @return 加入的文件数 */
+    private static int enqueueFolder(File root, boolean announce) {
         if (root == null || !root.isDirectory()) {
-            flashStatus("请选择文件夹");
-            return;
+            if (announce) {
+                flashStatus("请选择文件夹");
+            }
+            return 0;
         }
         Path rootPath = root.toPath();
         String treeName = FileNames.sanitize(root.getName());
@@ -2127,7 +2219,7 @@ public class TextSendMain {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                     String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                    if (!dir.equals(rootPath) && name.startsWith(".")) {
+                    if (!dir.equals(rootPath) && FolderPickDialog.skipJunk(name)) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                     if (!UserConfig.isFollowSymlinks() && Files.isSymbolicLink(dir)) {
@@ -2142,7 +2234,7 @@ public class TextSendMain {
                         return FileVisitResult.CONTINUE;
                     }
                     String name = file.getFileName().toString();
-                    if (name.startsWith(".")) {
+                    if (FolderPickDialog.skipJunk(name)) {
                         return FileVisitResult.CONTINUE;
                     }
                     if (!Files.isRegularFile(file)) {
@@ -2158,12 +2250,16 @@ public class TextSendMain {
                 }
             });
         } catch (IOException e) {
-            flashStatus("读取文件夹失败: " + e.getMessage());
-            return;
+            if (announce) {
+                flashStatus("读取文件夹失败: " + e.getMessage());
+            }
+            return 0;
         }
         if (files.isEmpty()) {
-            flashStatus("文件夹是空的（已跳过隐藏文件）");
-            return;
+            if (announce) {
+                flashStatus("文件夹是空的或无法读取");
+            }
+            return 0;
         }
         ensureFileTable();
         int added = 0;
@@ -2183,12 +2279,7 @@ public class TextSendMain {
             fileQueue.add(f);
             queueTree.put(key, treeName);
             queueRel.put(key, rels.get(i));
-            File parent = f.getParentFile();
-            fileModel.addRow(new Object[]{
-                    f.getName(),
-                    parent == null ? f.getAbsolutePath() : parent.getAbsolutePath(),
-                    fmtBytes(f.length())
-            });
+            fileModel.addRow(queueRow(f));
             added++;
         }
         if (added > 0) {
@@ -2198,11 +2289,14 @@ public class TextSendMain {
             }
         }
         refreshFileQueueLabel();
-        String msg = "已加入文件夹 " + treeName + "（" + added + " 个文件）";
-        if (dup > 0) {
-            msg += "，跳过重复 " + dup;
+        if (announce) {
+            String msg = "已加入文件夹 " + treeName + "（" + added + " 个文件）";
+            if (dup > 0) {
+                msg += "，跳过重复 " + dup;
+            }
+            flashStatus(msg);
         }
-        flashStatus(msg);
+        return added;
     }
 
     /** 把文件拖进 Java 对话框：只切换到该文件所在文件夹，显示里面的内容。 */
@@ -2302,8 +2396,25 @@ public class TextSendMain {
         if (dropped == null || dropped.isEmpty()) {
             return;
         }
+        List<File> dirs = new ArrayList<>();
+        List<File> onlyFiles = new ArrayList<>();
+        for (File f : dropped) {
+            if (f == null) {
+                continue;
+            }
+            if (f.isDirectory()) {
+                dirs.add(f);
+            } else if (f.isFile()) {
+                onlyFiles.add(f);
+            }
+        }
+        if (!dirs.isEmpty()) {
+            enqueueFolders(dirs);
+        }
+        if (onlyFiles.isEmpty()) {
+            return;
+        }
         ensureFileTable();
-        boolean skippedFolder = false;
         int dup = 0;
         int added = 0;
         List<Integer> newRows = new ArrayList<>();
@@ -2312,14 +2423,7 @@ public class TextSendMain {
         for (File q : fileQueue) {
             have.add(fileKey(q));
         }
-        for (File f : dropped) {
-            if (f == null) {
-                continue;
-            }
-            if (f.isDirectory()) {
-                skippedFolder = true;
-                continue;
-            }
+        for (File f : onlyFiles) {
             if (!f.isFile()) {
                 continue;
             }
@@ -2336,12 +2440,7 @@ public class TextSendMain {
             fileQueue.add(f);
             queueTree.remove(key);
             queueRel.remove(key);
-            File parent = f.getParentFile();
-            fileModel.addRow(new Object[]{
-                    f.getName(),
-                    parent == null ? f.getAbsolutePath() : parent.getAbsolutePath(),
-                    fmtBytes(f.length())
-            });
+            fileModel.addRow(queueRow(f));
             newRows.add(fileQueue.size() - 1);
             justAdded.add(f);
             added++;
@@ -2359,18 +2458,13 @@ public class TextSendMain {
         }
         refreshFileQueueLabel();
         if (added == 0) {
-            if (skippedFolder && dup == 0) {
-                flashStatus("不支持文件夹，请选择文件");
-            } else if (dup > 0) {
+            if (dup > 0) {
                 flashStatus("已在列表中");
             }
             return;
         }
         int queued = appendToSendQueue(justAdded);
         String msg = queued > 0 ? "已追加 " + queued + " 个，将依次发送" : "已加入 " + added + " 个文件";
-        if (skippedFolder) {
-            msg += "（已跳过文件夹）";
-        }
         if (dup > 0) {
             msg += "，跳过重复 " + dup;
         }
@@ -2505,6 +2599,7 @@ public class TextSendMain {
             fileQueue.remove(i);
             fileModel.removeRow(i);
         }
+        renumberFileRows();
         refreshFileQueueLabel();
         if (fileQueue.isEmpty()) {
             setFileListExpanded(false);
@@ -2531,6 +2626,7 @@ public class TextSendMain {
                 fileModel.removeRow(i);
             }
         }
+        renumberFileRows();
         refreshFileQueueLabel();
         if (fileQueue.isEmpty()) {
             setFileListExpanded(false);
@@ -2604,6 +2700,10 @@ public class TextSendMain {
             }
         }
         cancelFileSend.set(false);
+        if (clientPeer != null) {
+            clientPeer.prepareOutgoingSend();
+        }
+        TsServer.prepareOutgoingCurrent();
         synchronized (sendLock) {
             sendRemaining.clear();
             sendRemaining.addAll(files);
@@ -3005,6 +3105,10 @@ public class TextSendMain {
             qrDialog.pack();
             qrDialog.setResizable(false);
             qrDialog.setLocationRelativeTo(frame);
+            JRootPane rp = qrDialog.getRootPane();
+            rp.registerKeyboardAction(e -> closeQrDialog(),
+                    KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                    JComponent.WHEN_IN_FOCUSED_WINDOW);
             qrDialog.setVisible(true);
         } catch (Exception e) {
             e.printStackTrace();
@@ -3044,15 +3148,11 @@ public class TextSendMain {
         }
         netIps = ipAddr;
         String prefer = null;
-        boolean find172 = false;
+        int best = -1;
         for (String ip : ipAddr) {
-            if (ip.startsWith("192.168")) {
-                prefer = ip;
-                break;
-            } else if (ip.startsWith("172.")) {
-                prefer = ip;
-                find172 = true;
-            } else if (ip.startsWith("10.") && !find172) {
+            int score = lanScore(ip);
+            if (score > best) {
+                best = score;
                 prefer = ip;
             }
         }
@@ -3061,5 +3161,36 @@ public class TextSendMain {
         }
         System.err.println("TextSend " + VERSION + " 就绪，端口 " + serverListenPort);
         return prefer;
+    }
+
+    /** 优先家里 Wi‑Fi，避开 USB 共享 / ZeroTier / Hyper-V 等虚拟网卡。 */
+    private static int lanScore(String ip) {
+        if (ip == null || ip.contains(":")) {
+            return -1;
+        }
+        if (ip.startsWith("127.") || ip.startsWith("169.254.")) {
+            return -1;
+        }
+        if (ip.startsWith("10.147.") || ip.startsWith("100.")) {
+            return 1;
+        }
+        if (ip.startsWith("192.168.137.") || ip.startsWith("192.168.56.")
+                || ip.startsWith("192.168.193.")) {
+            return 2;
+        }
+        if (ip.startsWith("192.168.31.") || ip.startsWith("192.168.1.")
+                || ip.startsWith("192.168.0.") || ip.startsWith("192.168.2.")) {
+            return 50;
+        }
+        if (ip.startsWith("192.168.")) {
+            return 40;
+        }
+        if (ip.startsWith("172.")) {
+            return 20;
+        }
+        if (ip.startsWith("10.")) {
+            return 10;
+        }
+        return 0;
     }
 }

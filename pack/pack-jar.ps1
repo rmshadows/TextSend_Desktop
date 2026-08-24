@@ -1,6 +1,6 @@
 # fat JAR：对方机器需要 Java 17+
 # 用法：.\pack\pack-jar.ps1
-# 产物：dist\TextSend.jar
+# 产物：dist\Textsend_<版本>.jar
 $ErrorActionPreference = "Stop"
 $PackDir = $PSScriptRoot
 . (Join-Path $PackDir "common.ps1")
@@ -22,6 +22,7 @@ if (-not (Test-Path $Built)) {
     throw "Maven 没有打出 target\TextSend.jar"
 }
 Copy-Item -Force $Built $FAT_JAR
+Remove-Item -Force (Join-Path $DIST "TextSend.jar") -ErrorAction SilentlyContinue
 Write-Host "OK  $FAT_JAR"
 Write-Host "运行：java -jar `"$FAT_JAR`""
 Write-Host "配置文件会写在 jar 同一目录的 textsend.properties"

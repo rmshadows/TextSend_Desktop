@@ -31,8 +31,14 @@ public final class Protocol {
     public static final int NONCE_LEN = 16;
     public static final int PIN_LEN = 8;
     public static final int DEFAULT_PORT = 54300;
-    public static final int HANDSHAKE_TIMEOUT_MS = 10_000;
+    public static final int HANDSHAKE_TIMEOUT_MS = 15_000;
     public static final int ACK_TIMEOUT_MS = 5_000;
+
+    /** FILE_DONE 后对端可能还在落盘；按大小放宽，避免大文件误报 ACK timeout。 */
+    public static long fileDoneAckMs(long size) {
+        long mb = Math.max(0L, size / (1024L * 1024L));
+        return Math.min(180_000L, ACK_TIMEOUT_MS + mb * 80L);
+    }
     public static final int PIN_FAIL_MAX = 5;
     public static final int PIN_LOCK_MS = 60_000;
 

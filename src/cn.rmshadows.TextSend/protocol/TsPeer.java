@@ -49,6 +49,7 @@ public final class TsPeer implements Runnable {
     private volatile byte[] aesKey;
     private String sessionId;
     private volatile boolean handshakeOk;
+    private volatile boolean authBadKey;
     private volatile boolean peerHasFile;
     private volatile FileIoCallback fileIo;
     private final Object ackLock = new Object();
@@ -61,7 +62,9 @@ public final class TsPeer implements Runnable {
     private volatile int outgoingSeq;
     private volatile int outgoingOf;
     private final AtomicBoolean cancelOutgoing = new AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicInteger cancelEpoch = new java.util.concurrent.atomic.AtomicInteger();
     private volatile Inbox inbox;
+    private volatile String lastIncomingFileId;
     private final java.util.Map<String, Path> treeRoots = new java.util.HashMap<>();
 
     /**
@@ -100,6 +103,15 @@ public final class TsPeer implements Runnable {
         return alive.get() && aesKey != null;
     }
 
+    /** 仍占着连接名额（含正在握手）。 */
+    public boolean occupiesSlot() {
+        return alive.get();
+    }
+
+    public boolean authRejected() {
+        return authBadKey;
+    }
+
     public boolean supportsFile() {
         return peerHasFile;
     }
@@ -132,10 +144,15 @@ public final class TsPeer implements Runnable {
             }
             loop();
         } catch (SocketTimeoutException e) {
-            status("【握手】超时（" + (Protocol.HANDSHAKE_TIMEOUT_MS / 1000) + "s）");
+            status("【握手】超时（" + (Protocol.HANDSHAKE_TIMEOUT_MS / 1000) + "s） "
+                    + (e.getMessage() != null ? e.getMessage() : ""));
         } catch (AEADBadTagException e) {
+            authBadKey = true;
             status("【握手】AUTH_OK 解密失败 — PIN 或长密钥不匹配");
         } catch (Exception e) {
+            if (e.getCause() instanceof AEADBadTagException) {
+                authBadKey = true;
+            }
             status("【握手】失败: " + e.getMessage());
             if (!(e.getCause() instanceof AEADBadTagException)) {
                 e.printStackTrace();
@@ -157,6 +174,7 @@ public final class TsPeer implements Runnable {
         hello.addProperty("pinLen", Protocol.PIN_LEN);
         writePlain(Protocol.TYPE_HELLO, hello.toString());
         status("【握手】发送 HELLO  ver=1 auth=psk+pin pinLen=" + Protocol.PIN_LEN);
+        status("【握手】等待客户端 HELLO");
 
         Frame clientHello = readPlain(Protocol.TYPE_HELLO);
         JsonObject ch = parseJson(utf8(clientHello.payload));
@@ -413,6 +431,9 @@ public final class TsPeer implements Runnable {
         if (relPath != null && !relPath.isBlank()) {
             meta.addProperty("path", relPath);
         }
+        if ((cancelled != null && cancelled.getAsBoolean()) || cancelOutgoing.get() || !alive.get()) {
+            throw new IOException("cancelled");
+        }
         String headSha = ResumeFiles.sha256Head(path, size);
         String tailSha = ResumeFiles.sha256Tail(path, size);
         meta.addProperty("headSha256", headSha);
@@ -421,17 +442,22 @@ public final class TsPeer implements Runnable {
             meta.addProperty("seq", seq);
             meta.addProperty("of", of);
         }
+        if ((cancelled != null && cancelled.getAsBoolean()) || cancelOutgoing.get() || !alive.get()) {
+            throw new IOException("cancelled");
+        }
         System.out.println("Log: 【发送】FILE_META " + name + " " + size + "B " + kind + "/" + disposition);
 
-        cancelOutgoing.set(false);
         outgoingFileId = fileId;
         outgoingSeq = seq;
         outgoingOf = of;
+        boolean metaSent = false;
         try {
             writeCipher(Protocol.TYPE_FILE_META, meta.toString().getBytes(StandardCharsets.UTF_8));
+            metaSent = true;
             JsonObject ctrl = waitFileControl(fileId, Protocol.FILE_ACCEPT_TIMEOUT_MS);
             String op = str(ctrl, "op");
             if ("REJECT".equalsIgnoreCase(op)) {
+                metaSent = false;
                 throw new IOException("对端拒绝: " + str(ctrl, "reason"));
             }
             long offset = 0;
@@ -517,7 +543,7 @@ public final class TsPeer implements Runnable {
             try {
                 writeCipher(Protocol.TYPE_FILE_DONE, done.toString().getBytes(StandardCharsets.UTF_8));
                 synchronized (ackLock) {
-                    long deadline = System.currentTimeMillis() + Protocol.ACK_TIMEOUT_MS;
+                    long deadline = System.currentTimeMillis() + Protocol.fileDoneAckMs(size);
                     while (waitingAck && !ackReceived && alive.get() && !cancelOutgoing.get()) {
                         long left = deadline - System.currentTimeMillis();
                         if (left <= 0) {
@@ -540,6 +566,11 @@ public final class TsPeer implements Runnable {
             }
             System.out.println("Log: 【发送】FILE_DONE " + name);
             return true;
+        } catch (Exception e) {
+            if (metaSent) {
+                abortPeerReceive(fileId, e);
+            }
+            throw e;
         } finally {
             outgoingFileId = null;
             outgoingSeq = 0;
@@ -548,21 +579,19 @@ public final class TsPeer implements Runnable {
         }
     }
 
+    public void prepareOutgoingSend() {
+        cancelEpoch.incrementAndGet();
+        cancelOutgoing.set(false);
+        dropStaleFileControl();
+    }
+
     public void cancelFile() {
-        cancelOutgoing.set(true);
+        final int epoch = cancelEpoch.get();
         String outId = outgoingFileId;
-        if (outId != null) {
-            try {
-                sendControl("CANCEL", outId, null);
-            } catch (Exception ignored) {
-            }
-        }
         Inbox box = inbox;
+        String inId = box != null ? box.fileId : lastIncomingFileId;
+        cancelOutgoing.set(true);
         if (box != null) {
-            try {
-                sendControl("CANCEL", box.fileId, null);
-            } catch (Exception ignored) {
-            }
             failInbox(box, "已取消", true);
         }
         synchronized (fileLock) {
@@ -571,6 +600,22 @@ public final class TsPeer implements Runnable {
         synchronized (ackLock) {
             ackLock.notifyAll();
         }
+        Thread sender = new Thread(() -> {
+            try {
+                if (epoch != cancelEpoch.get()) {
+                    return;
+                }
+                if (outId != null) {
+                    sendControl("CANCEL", outId, "abort");
+                }
+                if (inId != null && !inId.equals(outId)) {
+                    sendControl("CANCEL", inId, "abort");
+                }
+            } catch (Exception ignored) {
+            }
+        }, "ts-cancel");
+        sender.setDaemon(true);
+        sender.start();
     }
 
     public void close() {
@@ -660,10 +705,13 @@ public final class TsPeer implements Runnable {
         }
         System.out.println("Log: 【接收】FILE_META " + name + " " + size + "B");
 
-        if (inbox != null) {
-            sendControl("REJECT", fileId, "busy");
-            return;
+        Inbox leftover = inbox;
+        if (leftover != null) {
+            failInbox(leftover, "已取消", true);
         }
+        cancelEpoch.incrementAndGet();
+        cancelOutgoing.set(false);
+        lastIncomingFileId = fileId;
         if (fileId.length() != Protocol.FILE_ID_LEN * 2 || size < 0 || size > Protocol.FILE_SIZE_MAX) {
             sendControl("REJECT", fileId, "meta");
             return;
@@ -683,6 +731,7 @@ public final class TsPeer implements Runnable {
             }
             Inbox opened = Inbox.open(fileId, name, size, kind, disposition, destDir, headSha, tailSha, seq, of);
             inbox = opened;
+            lastIncomingFileId = fileId;
             if (opened.resuming) {
                 sendResume(fileId, opened.written, opened.nextIndex, opened.partPath);
                 FileIoCallback cb = fileIo;
@@ -750,8 +799,24 @@ public final class TsPeer implements Runnable {
             sendControl("CANCEL", box.fileId, null);
             return;
         }
-        box.out.write(plain, dataOff, n);
-        box.out.flush();
+        try {
+            if (box.out == null || inbox != box) {
+                return;
+            }
+            box.out.write(plain, dataOff, n);
+            box.sha.update(plain, dataOff, n);
+            box.out.flush();
+        } catch (IOException e) {
+            if (inbox != box || cancelOutgoing.get()) {
+                return;
+            }
+            failInbox(box, e.getMessage(), true);
+            try {
+                sendControl("REJECT", box.fileId, "io");
+            } catch (Exception ignored) {
+            }
+            return;
+        }
         box.written += n;
         box.nextIndex++;
         FileIoCallback cb = fileIo;
@@ -774,7 +839,7 @@ public final class TsPeer implements Runnable {
             if (Files.size(box.partPath) != box.size) {
                 throw new IOException("大小不符");
             }
-            String got = ResumeFiles.sha256File(box.partPath);
+            String got = FileIds.shaHex(box.sha.digest());
             if (expectSha != null && !expectSha.isBlank() && !expectSha.equalsIgnoreCase(got)) {
                 throw new IOException("sha256");
             }
@@ -832,16 +897,22 @@ public final class TsPeer implements Runnable {
                 }
             }
         } else if ("CANCEL".equalsIgnoreCase(op)) {
-            if (outgoingFileId != null && outgoingFileId.equals(fileId)) {
+            boolean matchOut = outgoingFileId != null
+                    && (fileId.isEmpty() || outgoingFileId.equalsIgnoreCase(fileId));
+            if (matchOut) {
                 cancelOutgoing.set(true);
             }
             Inbox box = inbox;
-            if (box != null && box.fileId.equals(fileId)) {
-                failInbox(box, "对端取消", true);
+            if (box != null && (fileId.isEmpty() || box.fileId.equalsIgnoreCase(fileId))) {
+                failInbox(box, "对端取消", false);
             }
         }
         synchronized (fileLock) {
-            pendingControl = o;
+            if (!"CANCEL".equalsIgnoreCase(op)
+                    || fileId.isEmpty()
+                    || (outgoingFileId != null && outgoingFileId.equalsIgnoreCase(fileId))) {
+                pendingControl = o;
+            }
             fileLock.notifyAll();
         }
     }
@@ -853,8 +924,13 @@ public final class TsPeer implements Runnable {
                 if (pendingControl != null) {
                     JsonObject m = pendingControl;
                     pendingControl = null;
+                    String op = str(m, "op");
                     String id = m.has("fileId") ? m.get("fileId").getAsString() : "";
-                    if (fileId.equals(id)) {
+                    if ("CANCEL".equalsIgnoreCase(op) && (id.isEmpty() || fileId.equalsIgnoreCase(id))) {
+                        cancelOutgoing.set(true);
+                        throw new IOException("cancelled");
+                    }
+                    if (fileId.equalsIgnoreCase(id)) {
                         return m;
                     }
                 }
@@ -868,7 +944,34 @@ public final class TsPeer implements Runnable {
         }
     }
 
+    private void dropStaleFileControl() {
+        synchronized (fileLock) {
+            if (pendingControl == null) {
+                return;
+            }
+            String op = str(pendingControl, "op");
+            if ("CANCEL".equalsIgnoreCase(op) || "REJECT".equalsIgnoreCase(op)) {
+                pendingControl = null;
+            }
+        }
+    }
+
+    private void abortPeerReceive(String fileId, Exception e) {
+        String msg = e.getMessage();
+        if (msg != null && (msg.startsWith("对端拒绝") || msg.contains("ACK timeout")
+                || msg.contains("校验失败") || "cancelled".equals(msg))) {
+            return;
+        }
+        try {
+            sendControl("CANCEL", fileId, "abort");
+        } catch (Exception ignored) {
+        }
+    }
+
     private void sendControl(String op, String fileId, String reason) throws Exception {
+        if (!handshakeOk || aesKey == null || out == null) {
+            return;
+        }
         JsonObject o = new JsonObject();
         o.addProperty("op", op);
         if (fileId != null) {
@@ -948,13 +1051,14 @@ public final class TsPeer implements Runnable {
         final Path dir;
         final Path partPath;
         final boolean resuming;
+        final MessageDigest sha;
         OutputStream out;
         long written;
         int nextIndex;
 
         private Inbox(String fileId, String name, long size, String kind, String disposition,
                       String headSha, String tailSha, int seq, int of, Path dir, Path partPath,
-                      OutputStream out, long written, int nextIndex, boolean resuming) {
+                      OutputStream out, long written, int nextIndex, boolean resuming) throws Exception {
             this.fileId = fileId;
             this.name = name;
             this.size = size;
@@ -970,6 +1074,8 @@ public final class TsPeer implements Runnable {
             this.written = written;
             this.nextIndex = nextIndex;
             this.resuming = resuming;
+            this.sha = MessageDigest.getInstance("SHA-256");
+            feedPrefix(this.sha, partPath, written);
         }
 
         static Inbox open(String fileId, String name, long size, String kind, String disposition, Path dir,
@@ -1025,7 +1131,26 @@ public final class TsPeer implements Runnable {
             out = new BufferedOutputStream(Files.newOutputStream(partPath));
             written = 0;
             nextIndex = 0;
+            sha.reset();
             ResumeFiles.save(dir, name, size, 0, 0, headSha, tailSha);
+        }
+
+        private static void feedPrefix(MessageDigest digest, Path part, long written) throws Exception {
+            if (written <= 0 || part == null || !Files.isRegularFile(part)) {
+                return;
+            }
+            try (InputStream in = Files.newInputStream(part)) {
+                byte[] buf = new byte[64 * 1024];
+                long left = written;
+                while (left > 0) {
+                    int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                    if (n < 0) {
+                        throw new IOException("续传前缀不完整");
+                    }
+                    digest.update(buf, 0, n);
+                    left -= n;
+                }
+            }
         }
 
         void closeOut() throws IOException {

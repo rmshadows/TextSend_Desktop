@@ -22,8 +22,11 @@ APP_VERSION="${VERSION%%-*}"
 
 DIST="$ROOT/dist"
 JPACKAGE_INPUT="$DIST/jpackage-input"
-FAT_JAR="$DIST/TextSend.jar"
+FAT_JAR="$DIST/Textsend_${VERSION}.jar"
 MAIN_CLASS="application.TextSendMain"
+ICON_PNG="$ROOT/other/icon.png"
+ICON_ICO="$ROOT/other/icon.ico"
+ICON_ICNS="$ROOT/other/icon.icns"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then

@@ -28,6 +28,13 @@ esac
 
 echo "==> jpackage app-image"
 # $ROOTDIR 必须单引号，交给 jpackage 运行时展开（安装/解压目录根）
+ICON_JP=()
+if [[ -f "$ICON_PNG" ]]; then
+  ICON_JP=(--icon "$ICON_PNG")
+else
+  echo "警告：找不到 $ICON_PNG，绿色目录将用默认 Java 图标" >&2
+fi
+
 jpackage \
   --type app-image \
   --name TextSend \
@@ -38,7 +45,10 @@ jpackage \
   --input "$JPACKAGE_INPUT" \
   --main-jar TextSend.jar \
   --main-class "$MAIN_CLASS" \
+  "${ICON_JP[@]}" \
   --java-options "-Dfile.encoding=UTF-8" \
+  --java-options '--add-opens=java.desktop/sun.awt=ALL-UNNAMED' \
+  --java-options '--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED' \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
 ARCHIVE="$DIST/TextSend-${VERSION}-${TAG}.tar.gz"

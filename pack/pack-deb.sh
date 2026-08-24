@@ -31,6 +31,15 @@ echo "==> jpackage deb"
 # 先清掉旧 deb，避免混淆
 rm -f "$DIST"/textsend_*.deb "$DIST"/TextSend-*.deb
 
+ICON_JP=()
+if [[ -f "$ICON_PNG" ]]; then
+  ICON_JP=(--icon "$ICON_PNG")
+else
+  echo "警告：找不到 $ICON_PNG，.deb 将用默认 Java 图标" >&2
+fi
+
+JPACKAGE_RESOURCES="$PACK_DIR/jpackage-resources"
+
 jpackage \
   --type deb \
   --name TextSend \
@@ -44,7 +53,11 @@ jpackage \
   --main-class "$MAIN_CLASS" \
   --linux-shortcut \
   --linux-menu-group Utility \
+  --resource-dir "$JPACKAGE_RESOURCES" \
+  "${ICON_JP[@]}" \
   --java-options "-Dfile.encoding=UTF-8" \
+  --java-options '--add-opens=java.desktop/sun.awt=ALL-UNNAMED' \
+  --java-options '--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED' \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
 echo "OK  dist/ 下的 .deb"

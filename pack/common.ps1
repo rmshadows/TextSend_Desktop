@@ -21,8 +21,10 @@ $APP_VERSION = ($VERSION -split "-", 2)[0]
 
 $DIST = Join-Path $Root "dist"
 $JPACKAGE_INPUT = Join-Path $DIST "jpackage-input"
-$FAT_JAR = Join-Path $DIST "TextSend.jar"
+$FAT_JAR = Join-Path $DIST "Textsend_$VERSION.jar"
 $MAIN_CLASS = "application.TextSendMain"
+$ICON_PNG = Join-Path $Root "other\icon.png"
+$ICON_ICO = Join-Path $Root "other\icon.ico"
 
 function Need([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -32,3 +34,11 @@ function Need([string]$Name) {
 
 Write-Host "TextSend $VERSION  (app-version $APP_VERSION)"
 Write-Host "项目目录 $Root"
+
+function Get-WinIconArgs {
+    if (Test-Path $ICON_ICO) {
+        return @("--icon", $ICON_ICO)
+    }
+    Write-Warning "找不到 $ICON_ICO，安装包将用默认 Java 图标"
+    return @()
+}

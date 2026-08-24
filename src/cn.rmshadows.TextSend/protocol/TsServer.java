@@ -94,6 +94,23 @@ public final class TsServer implements Runnable {
         }
     }
 
+    public static void prepareOutgoingCurrent() {
+        TsServer s = instance;
+        if (s != null) {
+            s.prepareOutgoing();
+        }
+    }
+
+    public void prepareOutgoing() {
+        List<TsPeer> snap;
+        synchronized (peers) {
+            snap = new ArrayList<>(peers);
+        }
+        for (TsPeer p : snap) {
+            p.prepareOutgoingSend();
+        }
+    }
+
     public void stop() {
         running.set(false);
         try {
@@ -121,19 +138,25 @@ public final class TsServer implements Runnable {
     public void run() {
         try (ServerSocket ss = new ServerSocket(port, 50)) {
             serverSocket = ss;
-            System.out.println("Log: v1 server listen " + port + " PIN=" + material.pin
+            System.out.println("Log: v1 server listen *:" + port + " PIN=" + material.pin
                     + "  (psk+pin 两种连接都接受)");
             while (running.get()) {
                 Socket sock = ss.accept();
+                try {
+                    sock.setTcpNoDelay(true);
+                    sock.setKeepAlive(true);
+                } catch (IOException ignored) {
+                }
                 String ip = sock.getInetAddress() == null ? "?" : sock.getInetAddress().getHostAddress();
-                System.out.println("Log: 【接入】TCP " + ip + ":" + sock.getPort());
+                System.out.println("Log: 【接入】TCP " + ip + ":" + sock.getPort()
+                        + " 本机=" + sock.getLocalSocketAddress());
                 if (!authLimiter.allow(ip)) {
                     System.out.println("Log: 【拒绝】" + ip + " PIN 失败次数过多，已锁定");
                     sock.close();
                     continue;
                 }
                 synchronized (peers) {
-                    peers.removeIf(p -> !p.isAlive());
+                    peers.removeIf(p -> !p.occupiesSlot());
                     if (peers.size() >= maxConnections) {
                         System.out.println("Log: 【拒绝】" + ip + " 已达最大连接 " + maxConnections);
                         sock.close();
@@ -146,11 +169,11 @@ public final class TsServer implements Runnable {
                         notifyCount();
                     }, () -> {
                         TsPeer self = box[0];
-                        if (self != null && !self.handshakeSucceeded() && running.get()) {
+                        if (self != null && self.authRejected() && running.get()) {
                             authLimiter.fail(ip);
                         }
                         synchronized (peers) {
-                            peers.removeIf(p -> !p.isAlive());
+                            peers.removeIf(p -> !p.occupiesSlot());
                         }
                         notifyCount();
                     });
@@ -158,8 +181,8 @@ public final class TsServer implements Runnable {
                     box[0] = peer;
                     peers.add(peer);
                     pool.execute(peer);
-                    notifyCount();
                 }
+                notifyCount();
             }
         } catch (IOException e) {
             if (running.get()) {

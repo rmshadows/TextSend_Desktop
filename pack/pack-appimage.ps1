@@ -18,6 +18,7 @@ Copy-Item -Force $FAT_JAR (Join-Path $JPACKAGE_INPUT "TextSend.jar")
 
 Write-Host "==> jpackage app-image"
 # $ROOTDIR 必须单引号，交给 jpackage 运行时展开
+$iconArgs = Get-WinIconArgs
 & jpackage `
     --type app-image `
     --name TextSend `
@@ -28,6 +29,7 @@ Write-Host "==> jpackage app-image"
     --input $JPACKAGE_INPUT `
     --main-jar TextSend.jar `
     --main-class $MAIN_CLASS `
+    @iconArgs `
     --java-options "-Dfile.encoding=UTF-8" `
     --java-options '-Dtextsend.home=$ROOTDIR'
 if ($LASTEXITCODE -ne 0) { throw "jpackage app-image 失败" }

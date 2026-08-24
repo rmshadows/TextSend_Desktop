@@ -26,6 +26,11 @@
 
 	<build>
 		<sourceDirectory>src/cn.rmshadows.TextSend</sourceDirectory>
+		<resources>
+			<resource>
+				<directory>src/cn.rmshadows.TextSend/resources</directory>
+			</resource>
+		</resources>
 		<plugins>
 			<plugin>
 				<artifactId>maven-compiler-plugin</artifactId>

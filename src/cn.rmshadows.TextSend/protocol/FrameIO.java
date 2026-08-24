@@ -22,10 +22,12 @@ public final class FrameIO {
         header.put(Protocol.VERSION);
         header.put(type);
         header.putInt(payload.length);
-        out.write(header.array());
+        byte[] packet = new byte[Protocol.HEADER_LEN + payload.length];
+        System.arraycopy(header.array(), 0, packet, 0, Protocol.HEADER_LEN);
         if (payload.length > 0) {
-            out.write(payload);
+            System.arraycopy(payload, 0, packet, Protocol.HEADER_LEN, payload.length);
         }
+        out.write(packet);
         out.flush();
     }
 
@@ -47,12 +49,16 @@ public final class FrameIO {
     private static byte[] readFully(InputStream in, int n) throws IOException {
         byte[] buf = new byte[n];
         int off = 0;
-        while (off < n) {
-            int r = in.read(buf, off, n - off);
-            if (r < 0) {
-                throw new EOFException("unexpected EOF");
+        try {
+            while (off < n) {
+                int r = in.read(buf, off, n - off);
+                if (r < 0) {
+                    throw new EOFException("unexpected EOF after " + off + "/" + n);
+                }
+                off += r;
             }
-            off += r;
+        } catch (java.net.SocketTimeoutException e) {
+            throw new java.net.SocketTimeoutException("timeout after " + off + "/" + n + " bytes");
         }
         return buf;
     }

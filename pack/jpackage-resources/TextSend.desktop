@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=TextSend
+Comment=局域网文字互传
+Exec=/opt/textsend/bin/TextSend
+Icon=/opt/textsend/lib/TextSend.png
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupWMClass=TextSend
+StartupNotify=true
+MimeType=

@@ -21,6 +21,7 @@ Copy-Item -Force $FAT_JAR (Join-Path $JPACKAGE_INPUT "TextSend.jar")
 Write-Host "==> jpackage exe"
 Get-ChildItem -Path $DIST -Filter "*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
 
+$iconArgs = Get-WinIconArgs
 & jpackage `
     --type exe `
     --name TextSend `
@@ -33,6 +34,7 @@ Get-ChildItem -Path $DIST -Filter "*.exe" -ErrorAction SilentlyContinue | Remove
     --main-class $MAIN_CLASS `
     --win-shortcut `
     --win-menu `
+    @iconArgs `
     --java-options "-Dfile.encoding=UTF-8" `
     --java-options '-Dtextsend.home=$ROOTDIR'
 if ($LASTEXITCODE -ne 0) { throw "jpackage exe 失败" }

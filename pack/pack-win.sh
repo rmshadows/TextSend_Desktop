@@ -28,6 +28,13 @@ cp -f "$FAT_JAR" "$JPACKAGE_INPUT/TextSend.jar"
 echo "==> jpackage exe"
 rm -f "$DIST"/*.exe
 
+ICON_JP=()
+if [[ -f "$ICON_ICO" ]]; then
+  ICON_JP=(--icon "$ICON_ICO")
+else
+  echo "警告：找不到 $ICON_ICO，.exe 将用默认 Java 图标" >&2
+fi
+
 jpackage \
   --type exe \
   --name TextSend \
@@ -40,6 +47,7 @@ jpackage \
   --main-class "$MAIN_CLASS" \
   --win-shortcut \
   --win-menu \
+  "${ICON_JP[@]}" \
   --java-options "-Dfile.encoding=UTF-8" \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
