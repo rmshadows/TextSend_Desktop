@@ -52,7 +52,7 @@ Linux / macOS 用 `.sh`；Windows 用同名 `.ps1`。
 
 ## 产物怎么用
 
-- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.53.jar`（版本号随 `TextSendMain.VERSION`）
+- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.56.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。Linux：`TextSend/bin/TextSend`；Mac：`TextSend.app`；Windows：`TextSend\TextSend.exe`
 - **.deb**：`sudo dpkg -i dist/textsend_*.deb`，一般装到 `/opt`
 - **.dmg / .exe**：本机安装器用。Mac 的 dmg 未签名，可能要右键打开

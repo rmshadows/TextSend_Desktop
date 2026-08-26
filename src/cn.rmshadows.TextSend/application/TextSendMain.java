@@ -20,12 +20,17 @@ import javax.swing.plaf.metal.DefaultMetalTheme;
 import javax.swing.plaf.metal.MetalLookAndFeel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.AbstractDocument;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.DocumentFilter;
 import javax.swing.text.DefaultEditorKit;
 import javax.swing.text.JTextComponent;
 import javax.swing.undo.UndoManager;
 import java.awt.*;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.ActionEvent;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
@@ -72,7 +77,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.53";
+    public static final String VERSION = "5.0.56";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -231,6 +236,12 @@ public class TextSendMain {
     private static JLabel pastePreviewText;
     private static JDialog pastePreviewDialog;
     private static JCheckBox checkFollowLinks;
+    private static JCheckBox checkAutoStart;
+    private static JCheckBox checkCustomPin;
+    private static JTextField fieldCustomPin;
+    private static JCheckBox checkRememberClient;
+    /** 仅程序首次启动时尝试自动开服，切换角色/小窗重建不再触发 */
+    private static boolean autoStartPending = true;
     private static final DefaultTableModel fileModel = new DefaultTableModel(
             new Object[]{"序号", "文件名", "所在路径", "大小"}, 0) {
         @Override
@@ -281,7 +292,9 @@ public class TextSendMain {
         UserConfig.load();
         serverListenPort = String.valueOf(UserConfig.getListenPort());
         miniMode = UserConfig.isPreferMini();
-        preferIpAddr = getIP() + ":" + serverListenPort;
+        String heuristicIp = getIP();
+        String listenIp = resolveListenIp(heuristicIp);
+        preferIpAddr = listenIp + ":" + serverListenPort;
         SwingUtilities.invokeLater(() -> {
             AppIcons.applyToTaskbar();
             applyLookAndFeelForMode();
@@ -321,9 +334,7 @@ public class TextSendMain {
         for (String ip : netIps) {
             comboIps.addItem(ip);
         }
-        if (preferIpAddr != null) {
-            comboIps.setSelectedItem(preferIpAddr.split(":")[0]);
-        }
+        selectListenIpInCombo(preferIpAddr != null ? preferIpAddr.split(":")[0] : null);
         fieldPort = new JTextField(serverListenPort, 5);
         styleField(fieldPort);
 
@@ -471,6 +482,7 @@ public class TextSendMain {
         if (!frame.isVisible()) {
             frame.setVisible(true);
         }
+        maybeAutoStartServer();
     }
 
     /** 小窗副按钮：空闲=切换角色，运行中=发送（旧版复用） */
@@ -863,6 +875,7 @@ public class TextSendMain {
         bindEscapeExitMini((JComponent) frame.getContentPane());
         installFileDrop(miniTextArea);
         miniShowingPin = false;
+        prefillClientConnection();
     }
 
     private static void applyLayout() {
@@ -945,10 +958,71 @@ public class TextSendMain {
                 netLeft.add(comboIps);
                 netLeft.add(new JLabel(":"));
                 netLeft.add(fieldPort);
+                checkAutoStart = new JCheckBox("启动即开服");
+                checkAutoStart.setOpaque(false);
+                checkAutoStart.setToolTipText("打开程序后自动启动服务端（默认关）；不自动弹出二维码");
+                checkAutoStart.setSelected(UserConfig.isAutoStartServer());
+                checkAutoStart.addActionListener(e -> UserConfig.setAutoStartServer(checkAutoStart.isSelected()));
+                netLeft.add(checkAutoStart);
                 net.add(netLeft, BorderLayout.CENTER);
                 comboIps.setPreferredSize(new Dimension(UserConfig.s(420), UserConfig.s(28)));
                 comboIps.setMinimumSize(new Dimension(UserConfig.s(280), UserConfig.s(28)));
                 body.add(net);
+
+                JPanel pinRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+                pinRow.setOpaque(false);
+                pinRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+                checkCustomPin = new JCheckBox("固定 PIN");
+                checkCustomPin.setOpaque(false);
+                checkCustomPin.setToolTipText("开启后每次启动服务端使用同一 8 位 PIN（默认关，随机生成）");
+                fieldCustomPin = new JTextField(UserConfig.getCustomPin(), Protocol.PIN_LEN);
+                fieldCustomPin.setFont(fieldCustomPin.getFont().deriveFont((float) UserConfig.s(13)));
+                fieldCustomPin.setToolTipText("8 位数字");
+                fieldCustomPin.setPreferredSize(new Dimension(UserConfig.s(88), UserConfig.s(28)));
+                checkCustomPin.setSelected(UserConfig.isCustomPinEnabled());
+                ((AbstractDocument) fieldCustomPin.getDocument()).setDocumentFilter(new DocumentFilter() {
+                    @Override
+                    public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
+                            throws javax.swing.text.BadLocationException {
+                        if (text != null) {
+                            StringBuilder digits = new StringBuilder();
+                            for (int i = 0; i < text.length(); i++) {
+                                char c = text.charAt(i);
+                                if (c >= '0' && c <= '9') {
+                                    digits.append(c);
+                                }
+                            }
+                            text = digits.toString();
+                        }
+                        String cur = fb.getDocument().getText(0, fb.getDocument().getLength());
+                        String next = cur.substring(0, offset) + (text == null ? "" : text) + cur.substring(offset + length);
+                        if (next.length() <= Protocol.PIN_LEN) {
+                            super.replace(fb, offset, length, text, attrs);
+                        }
+                    }
+                });
+                checkCustomPin.addActionListener(e -> {
+                    boolean on = checkCustomPin.isSelected();
+                    if (on && !UserConfig.isValidPin(fieldCustomPin.getText().trim())) {
+                        checkCustomPin.setSelected(false);
+                        flashStatus("请先输入 8 位数字，再勾选固定 PIN");
+                        return;
+                    }
+                    UserConfig.setCustomPinEnabled(on);
+                    if (on) {
+                        persistCustomPin();
+                    }
+                });
+                fieldCustomPin.addActionListener(e -> persistCustomPin());
+                fieldCustomPin.addFocusListener(new FocusAdapter() {
+                    @Override
+                    public void focusLost(FocusEvent e) {
+                        persistCustomPin();
+                    }
+                });
+                pinRow.add(checkCustomPin);
+                pinRow.add(fieldCustomPin);
+                body.add(pinRow);
                 body.add(Box.createVerticalStrut(UserConfig.s(8)));
 
                 JPanel cards = new JPanel(new GridBagLayout());
@@ -977,7 +1051,24 @@ public class TextSendMain {
                 tip.setAlignmentX(Component.LEFT_ALIGNMENT);
                 tip.setBorder(new EmptyBorder(UserConfig.s(4), 0, UserConfig.s(4), 0));
                 body.add(tip);
+                JPanel clientOpts = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+                clientOpts.setOpaque(false);
+                clientOpts.setAlignmentX(Component.LEFT_ALIGNMENT);
+                checkRememberClient = new JCheckBox("记住上次连接");
+                checkRememberClient.setOpaque(false);
+                checkRememberClient.setToolTipText("下次进入客户端模式自动填入上次成功的 IP、端口和 PIN（默认关，不记长密钥）");
+                checkRememberClient.setSelected(UserConfig.isRememberLastClient());
+                checkRememberClient.addActionListener(e -> {
+                    boolean on = checkRememberClient.isSelected();
+                    UserConfig.setRememberLastClient(on);
+                    if (!on) {
+                        UserConfig.clearClientConnection();
+                    }
+                });
+                clientOpts.add(checkRememberClient);
+                body.add(clientOpts);
                 body.add(Box.createVerticalStrut(UserConfig.s(6)));
+                prefillClientConnection();
             }
 
             JLabel msgTitle = new JLabel(isServerMode ? "发送内容" : "连接串 / 发送内容");
@@ -1135,9 +1226,13 @@ public class TextSendMain {
         }
         scaleRebuildTimer = new Timer(120, ev -> {
             Point keepLoc = frame != null ? frame.getLocation() : null;
+            boolean reopenQr = qrDialog != null && qrDialog.isVisible();
             buildUi(isServerMode);
             if (keepLoc != null && frame != null) {
                 frame.setLocation(keepLoc);
+            }
+            if (reopenQr && isServerRunning()) {
+                showQr();
             }
         });
         scaleRebuildTimer.setRepeats(false);
@@ -1235,6 +1330,7 @@ public class TextSendMain {
             comboIps.addActionListener(e -> {
                 Object s = comboIps.getSelectedItem();
                 comboIps.setToolTipText(s == null ? null : s.toString());
+                persistListenIp();
                 onAdvertiseIpChanged();
             });
         }
@@ -1355,9 +1451,11 @@ public class TextSendMain {
     }
 
     private static void startServer(boolean showQrImg) {
-        pairingMaterial = PairingMaterial.generate();
+        pairingMaterial = PairingMaterial.forSession(
+                UserConfig.isCustomPinEnabled(), UserConfig.getCustomPin());
         connectedClients = 0;
         String selectedIp = (String) comboIps.getSelectedItem();
+        persistListenIp();
         lastConnectUri = pairingMaterial.toUri(selectedIp, getServerListenPort());
         System.out.println("Log: PIN=" + pairingMaterial.pin);
         System.out.println("Log: URI=" + lastConnectUri);
@@ -1428,6 +1526,20 @@ public class TextSendMain {
         refreshRunningChrome();
     }
 
+    private static void prefillClientConnection() {
+        if (isServerMode || !UserConfig.isRememberLastClient()) {
+            return;
+        }
+        String host = UserConfig.getClientHost();
+        String pin = UserConfig.getClientPin();
+        if (host.isBlank() || !UserConfig.isValidPin(pin)) {
+            return;
+        }
+        String prefill = TsUri.format(host, UserConfig.getClientPort(), pin);
+        setTextResetUndo(areaMessage, prefill);
+        setTextResetUndo(miniTextArea, prefill);
+    }
+
     private static void startClient() {
         if (isClientConnected || clientHandshaking) {
             return;
@@ -1463,6 +1575,9 @@ public class TextSendMain {
                 }, () -> SwingUtilities.invokeLater(() -> {
                     clientHandshaking = false;
                     isClientConnected = true;
+                    if (UserConfig.isRememberLastClient() && uri.pinMode) {
+                        UserConfig.setClientConnection(uri.host, uri.port, uri.pin());
+                    }
                     setTextResetUndo(areaMessage, "");
                     setTextResetUndo(miniTextArea, "");
                     inputShowingCount = false;
@@ -1782,11 +1897,14 @@ public class TextSendMain {
                 · 左键启动：最多 1 个客户端，并打开二维码。
                 · 中键启动：最多 7 个客户端。
                 · 右键启动：最多 1 个客户端，不弹二维码。
+                · 可勾选「启动即开服」：下次打开自动开服（默认关）。会记住上次监听 IP。
+                · 可勾选「固定 PIN」并输入 8 位数字：每次启动服务端用同一 PIN（默认关，随机 PIN + 长密钥）。
                 · PIN 卡片：单击复制 ts://…/kPIN 连接串；双击复制 8 位 PIN。
                 · 长密钥卡片：单击复制 PSK 连接串；双击复制长密钥。
 
                 —— 客户端 ——
                 · 粘贴连接串 ts://IP/k... 后点「连接」。端口可省略，默认 54300。
+                · 可勾选「记住上次连接」：PIN 连成功后记住 IP、端口和 PIN（默认关，不记长密钥）。
                 · 不要只填 IP。PIN 路径用 8 位短码，扫码用长密钥。
                 · 握手成功后才清空输入框；失败或点断开则保留连接串。
 
@@ -1825,11 +1943,13 @@ public class TextSendMain {
                 —— 二维码 ——
                 · 左键启动会弹出二维码；有客户端连上后自动关闭。
                 · 点「二维码」手动打开则保持显示，连上也不关。Esc 关闭。
+                · 高 UI 缩放下二维码默认完整显示；可拖动窗口边角放大，始终整张码可见可扫。
 
                 —— 配置文件 ——
                 · 优先：程序同一目录的 textsend.properties（jar / 绿色版）。
                 · 程序目录不能写时（系统安装包）：主目录下仅一份 .textsend.properties。
-                · 不建 ~/.config。保存项：uiScale、listenPort、preferMini、followSymlinks。
+                · 不建 ~/.config。保存项：uiScale、listenPort、preferMini、followSymlinks、listenIp、autoStartServer、customPinEnabled、customPin、rememberLastClient、clientHost、clientPort、clientPin。
+                · 「启动即开服」默认关；会记住上次选的监听 IP，换网后该 IP 不在网卡列表则自动重选。
                 """.formatted(VERSION);
         JTextArea area = new JTextArea(text);
         area.setEditable(false);
@@ -3064,7 +3184,8 @@ public class TextSendMain {
             return;
         }
         try {
-            BufferedImage img = QR_Util.createQRImage(lastConnectUri, 360);
+            int genSize = Math.min(1024, Math.max(360, UserConfig.s(480)));
+            BufferedImage qrSource = QR_Util.createQRImage(lastConnectUri, genSize);
             closeQrDialog();
             qrDialog = new JDialog(frame, "扫码连接", false);
             qrDialog.setAlwaysOnTop(true);
@@ -3081,8 +3202,42 @@ public class TextSendMain {
             JPanel panel = new JPanel(new BorderLayout(0, UserConfig.s(8)));
             panel.setBackground(CARD);
             panel.setBorder(new EmptyBorder(UserConfig.s(12), UserConfig.s(12), UserConfig.s(12), UserConfig.s(12)));
-            JLabel pic = new JLabel(new ImageIcon(img));
-            pic.setHorizontalAlignment(SwingConstants.CENTER);
+
+            JPanel qrPanel = new JPanel() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    int w = getWidth();
+                    int h = getHeight();
+                    int side = Math.min(w, h);
+                    if (side < 4 || qrSource == null) {
+                        return;
+                    }
+                    int x = (w - side) / 2;
+                    int y = (h - side) / 2;
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                            RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                    g2.drawImage(qrSource, x, y, side, side, null);
+                    g2.dispose();
+                }
+            };
+            qrPanel.setBackground(Color.WHITE);
+            qrPanel.setToolTipText("拖动窗口边角可放大二维码（始终显示完整图案）");
+            qrPanel.addComponentListener(new ComponentAdapter() {
+                @Override
+                public void componentResized(ComponentEvent e) {
+                    qrPanel.repaint();
+                }
+            });
+
+            Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+            int pad = UserConfig.s(40);
+            int uriReserve = UserConfig.s(88);
+            int maxSide = Math.min((int) (screen.width * 0.92), (int) (screen.height * 0.88) - uriReserve);
+            int initialSide = Math.min(qrSource.getWidth() + pad, Math.max(maxSide, UserConfig.s(280)));
+            qrPanel.setPreferredSize(new Dimension(initialSide, initialSide));
+
             JTextArea uriArea = new JTextArea(lastConnectUri);
             uriArea.setEditable(false);
             uriArea.setLineWrap(true);
@@ -3099,11 +3254,12 @@ public class TextSendMain {
                     flashStatus("已复制连接串");
                 }
             });
-            panel.add(pic, BorderLayout.CENTER);
+            panel.add(qrPanel, BorderLayout.CENTER);
             panel.add(uriArea, BorderLayout.SOUTH);
             qrDialog.setContentPane(panel);
             qrDialog.pack();
-            qrDialog.setResizable(false);
+            qrDialog.setResizable(true);
+            qrDialog.setMinimumSize(new Dimension(UserConfig.s(220), UserConfig.s(260)));
             qrDialog.setLocationRelativeTo(frame);
             JRootPane rp = qrDialog.getRootPane();
             rp.registerKeyboardAction(e -> closeQrDialog(),
@@ -3114,6 +3270,86 @@ public class TextSendMain {
             e.printStackTrace();
             flashStatus("二维码生成失败: " + e.getMessage());
         }
+    }
+
+    private static boolean netIpsContains(String ip) {
+        if (ip == null || ip.isBlank() || netIps == null) {
+            return false;
+        }
+        for (String candidate : netIps) {
+            if (ip.equals(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String resolveListenIp(String heuristic) {
+        String saved = UserConfig.getListenIp();
+        if (!saved.isEmpty() && netIpsContains(saved)) {
+            return saved;
+        }
+        if (!saved.isEmpty()) {
+            System.out.println("保存的监听 IP 不在当前网卡列表，改用自动选择: " + saved);
+        }
+        if (heuristic != null && !heuristic.isBlank()) {
+            return heuristic;
+        }
+        return netIps.isEmpty() ? "127.0.0.1" : netIps.getFirst();
+    }
+
+    private static void selectListenIpInCombo(String ip) {
+        if (comboIps == null) {
+            return;
+        }
+        if (ip != null && netIpsContains(ip)) {
+            comboIps.setSelectedItem(ip);
+            return;
+        }
+        if (!netIps.isEmpty()) {
+            comboIps.setSelectedIndex(0);
+        }
+    }
+
+    private static void persistListenIp() {
+        if (comboIps == null) {
+            return;
+        }
+        Object selected = comboIps.getSelectedItem();
+        if (selected == null) {
+            return;
+        }
+        String ip = selected.toString().trim();
+        if (!ip.isEmpty()) {
+            UserConfig.setListenIp(ip);
+        }
+    }
+
+    private static void persistCustomPin() {
+        if (fieldCustomPin == null) {
+            return;
+        }
+        String pin = fieldCustomPin.getText().trim();
+        if (!pin.isEmpty() && !UserConfig.isValidPin(pin)) {
+            flashStatus("PIN 须为 8 位数字");
+            fieldCustomPin.setText(UserConfig.getCustomPin());
+            if (checkCustomPin != null) {
+                checkCustomPin.setSelected(UserConfig.isCustomPinEnabled());
+            }
+            return;
+        }
+        UserConfig.setCustomPin(pin);
+    }
+
+    private static void maybeAutoStartServer() {
+        if (!autoStartPending || !UserConfig.isAutoStartServer() || !isServerMode || isServerRunning()) {
+            return;
+        }
+        autoStartPending = false;
+        if (!miniMode) {
+            syncPortFromField();
+        }
+        startServer(false);
     }
 
     public static String getIP() throws SocketException {

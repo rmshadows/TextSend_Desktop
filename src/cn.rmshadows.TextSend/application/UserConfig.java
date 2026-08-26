@@ -24,6 +24,14 @@ public final class UserConfig {
     private static int listenPort = 54300;
     private static boolean preferMini = false;
     private static boolean followSymlinks = false;
+    private static String listenIp = "";
+    private static boolean autoStartServer = false;
+    private static boolean customPinEnabled = false;
+    private static String customPin = "";
+    private static boolean rememberLastClient = false;
+    private static String clientHost = "";
+    private static int clientPort = 54300;
+    private static String clientPin = "";
 
     private UserConfig() {
     }
@@ -87,6 +95,20 @@ public final class UserConfig {
             listenPort = Integer.parseInt(p.getProperty("listenPort", "54300"));
             preferMini = Boolean.parseBoolean(p.getProperty("preferMini", "false"));
             followSymlinks = Boolean.parseBoolean(p.getProperty("followSymlinks", "false"));
+            listenIp = p.getProperty("listenIp", "").trim();
+            autoStartServer = Boolean.parseBoolean(p.getProperty("autoStartServer", "false"));
+            customPinEnabled = Boolean.parseBoolean(p.getProperty("customPinEnabled", "false"));
+            customPin = p.getProperty("customPin", "").trim();
+            if (!isValidPin(customPin)) {
+                customPin = "";
+            }
+            rememberLastClient = Boolean.parseBoolean(p.getProperty("rememberLastClient", "false"));
+            clientHost = p.getProperty("clientHost", "").trim();
+            clientPort = parsePort(54300, p.getProperty("clientPort", "54300"));
+            clientPin = p.getProperty("clientPin", "").trim();
+            if (!isValidPin(clientPin)) {
+                clientPin = "";
+            }
         } catch (Exception e) {
             System.err.println("读取配置失败: " + e.getMessage());
         }
@@ -103,6 +125,14 @@ public final class UserConfig {
             p.setProperty("listenPort", Integer.toString(listenPort));
             p.setProperty("preferMini", Boolean.toString(preferMini));
             p.setProperty("followSymlinks", Boolean.toString(followSymlinks));
+            p.setProperty("listenIp", listenIp == null ? "" : listenIp);
+            p.setProperty("autoStartServer", Boolean.toString(autoStartServer));
+            p.setProperty("customPinEnabled", Boolean.toString(customPinEnabled));
+            p.setProperty("customPin", customPin == null ? "" : customPin);
+            p.setProperty("rememberLastClient", Boolean.toString(rememberLastClient));
+            p.setProperty("clientHost", clientHost == null ? "" : clientHost);
+            p.setProperty("clientPort", Integer.toString(clientPort));
+            p.setProperty("clientPin", clientPin == null ? "" : clientPin);
             try (OutputStream out = Files.newOutputStream(FILE)) {
                 p.store(out, "TextSend Desktop");
             }
@@ -175,6 +205,97 @@ public final class UserConfig {
     public static void setFollowSymlinks(boolean v) {
         followSymlinks = v;
         save();
+    }
+
+    public static String getListenIp() {
+        return listenIp == null ? "" : listenIp;
+    }
+
+    public static void setListenIp(String ip) {
+        listenIp = ip == null ? "" : ip.trim();
+        save();
+    }
+
+    public static boolean isAutoStartServer() {
+        return autoStartServer;
+    }
+
+    public static void setAutoStartServer(boolean v) {
+        autoStartServer = v;
+        save();
+    }
+
+    public static boolean isCustomPinEnabled() {
+        return customPinEnabled;
+    }
+
+    public static void setCustomPinEnabled(boolean v) {
+        customPinEnabled = v;
+        save();
+    }
+
+    public static String getCustomPin() {
+        return customPin == null ? "" : customPin;
+    }
+
+    public static void setCustomPin(String pin) {
+        String s = pin == null ? "" : pin.trim();
+        if (!s.isEmpty() && !isValidPin(s)) {
+            return;
+        }
+        customPin = s;
+        save();
+    }
+
+    public static boolean isValidPin(String pin) {
+        return pin != null && pin.matches("\\d{8}");
+    }
+
+    public static boolean isRememberLastClient() {
+        return rememberLastClient;
+    }
+
+    public static void setRememberLastClient(boolean v) {
+        rememberLastClient = v;
+        save();
+    }
+
+    public static String getClientHost() {
+        return clientHost == null ? "" : clientHost;
+    }
+
+    public static int getClientPort() {
+        return clientPort;
+    }
+
+    public static String getClientPin() {
+        return clientPin == null ? "" : clientPin;
+    }
+
+    public static void setClientConnection(String host, int port, String pin) {
+        clientHost = host == null ? "" : host.trim();
+        clientPort = port >= 1 && port <= 65535 ? port : 54300;
+        String s = pin == null ? "" : pin.trim();
+        clientPin = isValidPin(s) ? s : "";
+        save();
+    }
+
+    public static void clearClientConnection() {
+        clientHost = "";
+        clientPort = 54300;
+        clientPin = "";
+        save();
+    }
+
+    private static int parsePort(int fallback, String raw) {
+        try {
+            int port = Integer.parseInt(raw.trim());
+            if (port >= 1 && port <= 65535) {
+                return port;
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
     }
 
     /** 按缩放换算像素 */
