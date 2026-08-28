@@ -35,6 +35,13 @@ else
   echo "警告：找不到 $ICON_PNG，绿色目录将用默认 Java 图标" >&2
 fi
 
+# 与 Windows 一样打出日常 + 调试两个启动器
+if [[ ! -f "$JP_CONSOLE_PROPS" ]]; then
+  echo "缺少 $JP_CONSOLE_PROPS" >&2
+  exit 1
+fi
+ADD_LAUNCHER=(--add-launcher "TextSend-console=$JP_CONSOLE_PROPS")
+
 jpackage \
   --type app-image \
   --name TextSend \
@@ -45,6 +52,8 @@ jpackage \
   --input "$JPACKAGE_INPUT" \
   --main-jar TextSend.jar \
   --main-class "$MAIN_CLASS" \
+  --add-modules "$JP_MODULES" \
+  "${ADD_LAUNCHER[@]}" \
   "${ICON_JP[@]}" \
   --java-options "-Dfile.encoding=UTF-8" \
   --java-options '--add-opens=java.desktop/sun.awt=ALL-UNNAMED' \
@@ -56,10 +65,17 @@ rm -f "$ARCHIVE"
 if [[ -d "$DIST/TextSend.app" ]]; then
   tar -C "$DIST" -czf "$ARCHIVE" TextSend.app
   echo "OK  $DIST/TextSend.app"
+  echo "日常：$DIST/TextSend.app"
+  if [[ -x "$DIST/TextSend.app/Contents/MacOS/TextSend-console" ]]; then
+    echo "调试：$DIST/TextSend.app/Contents/MacOS/TextSend-console"
+  fi
 else
   tar -C "$DIST" -czf "$ARCHIVE" TextSend
   echo "OK  $DIST/TextSend/"
-  echo "启动：$DIST/TextSend/bin/TextSend"
+  echo "日常：$DIST/TextSend/bin/TextSend"
+  if [[ -x "$DIST/TextSend/bin/TextSend-console" ]]; then
+    echo "调试：$DIST/TextSend/bin/TextSend-console"
+  fi
 fi
 echo "OK  $ARCHIVE"
 echo "配置：安装/解压目录下的 textsend.properties（不写用户主目录）"

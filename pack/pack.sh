@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 一键：fat JAR + 绿色目录（jpackage app-image）+ 本平台安装包
-# Linux → 再打 .deb；macOS → 再打 .dmg；Windows 请用 pack.ps1
+# Linux → 再打 .deb；macOS → 再打 .dmg；Windows 请用 pack.bat
 # 用法：./pack/pack.sh
 set -euo pipefail
 # shellcheck source=common.sh
@@ -29,3 +29,12 @@ esac
 echo
 echo "==> 完成，产物在 $DIST"
 ls -1 "$DIST" | sed 's/^/  /'
+if [[ -x "$DIST/TextSend/bin/TextSend-console" ]]; then
+  echo
+  echo "日常：$DIST/TextSend/bin/TextSend"
+  echo "调试：$DIST/TextSend/bin/TextSend-console"
+elif [[ -x "$DIST/TextSend.app/Contents/MacOS/TextSend-console" ]]; then
+  echo
+  echo "日常：$DIST/TextSend.app"
+  echo "调试：$DIST/TextSend.app/Contents/MacOS/TextSend-console"
+fi

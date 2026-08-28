@@ -50,6 +50,11 @@ else
   echo "警告：找不到 $ICON_ICNS，.dmg 将用默认 Java 图标" >&2
 fi
 
+if [[ ! -f "$JP_CONSOLE_PROPS" ]]; then
+  echo "缺少 $JP_CONSOLE_PROPS" >&2
+  exit 1
+fi
+
 jpackage \
   --type dmg \
   --name TextSend \
@@ -60,11 +65,15 @@ jpackage \
   --input "$JPACKAGE_INPUT" \
   --main-jar TextSend.jar \
   --main-class "$MAIN_CLASS" \
+  --add-modules "$JP_MODULES" \
+  --add-launcher "TextSend-console=$JP_CONSOLE_PROPS" \
   "${ICON_JP[@]}" \
   --java-options "-Dfile.encoding=UTF-8" \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
 echo "OK  dist/ 下的 .dmg"
 ls -1 "$DIST"/*.dmg
+echo "日常：安装后的 TextSend.app"
+echo "调试：TextSend.app/Contents/MacOS/TextSend-console（终端跑可看 Log）"
 echo "未签名。本机打开若被拦，可右键打开或去系统设置放行。"
 echo "配置：程序目录能写就写旁边；否则主目录 .textsend.properties"

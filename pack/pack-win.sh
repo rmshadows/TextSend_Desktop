@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Windows .exe（jpackage，自带 JRE）。Git Bash 备用；日常请用 pack-win.ps1。
+# Windows .exe（jpackage，自带 JRE）。Git Bash 备用；日常请用 pack-win.bat。
 # 用法：./pack/pack-win.sh
 # 产物：dist/*.exe
 set -euo pipefail

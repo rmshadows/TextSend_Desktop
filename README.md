@@ -1,6 +1,6 @@
  # TextSend_Desktop
 
- - Current Version: 5.0.56
+ - Current Version: 5.0.59
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 17 Swing Linux （Windows 可用打包脚本打 exe，本机未作为主测试平台。macOS 需在对应系统打包）
@@ -29,10 +29,10 @@ Linux / macOS：
 ./pack/pack.sh
 ```
 
-Windows PowerShell（在 `TextSend_Desktop` 目录）：
+Windows cmd（在 `TextSend_Desktop` 目录）：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\pack\pack.ps1
+```bat
+pack\pack.bat
 ```
 
 Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应系统上打，不能交叉编译。
@@ -104,6 +104,20 @@ Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应
 
 5.0.0 起为协议 v1（二进制帧 / AES-GCM / `ts://`），与旧 4.0.x JSON 协议不互通。
 
+- 2026.8.28——5.0.59
+  - 绿色版/安装包二维码：自带 JRE 补上 `jdk.charsets`（ZXing 要 EUC_JP）。jar/IDEA 本来就能弹，缺模块会崩。Windows / Linux / macOS 打包脚本已对齐
+  - 打包额外给出调试启动器（Windows `TextSend-console.exe` 有黑窗口；Linux `bin/TextSend-console`；macOS `Contents/MacOS/TextSend-console`）；日常仍用无控制台那个
+  - `.deb` 打两份：`textsend_*_amd64.deb` 原版（jpackage 扫库名）+ `*.compat.deb` 宽松 Depends（Debian 12/13、Ubuntu）
+  - 标题旁百分比：双击恢复 100%
+  - 端口 / 固定 PIN 输入框加宽（按数字列宽，PIN 仍只能输入 8 位）
+  - Windows 打包改为 `pack\pack.bat`（去掉 `.ps1`）；服务端启动悬停 + 松开触发（5.0.57 / 5.0.58）
+
+- 2026.8.27——5.0.58
+  - 服务端「启动/停止」改在鼠标松开时触发（不用 mouseClicked），修 Windows 快速点击有时没反应
+
+- 2026.8.27——5.0.57
+  - 服务端「启动」鼠标悬停高亮（rollover）；原先拆掉 UI 监听后没有悬停态。中键/右键/长按改端口不变
+
 - 2026.8.26——5.0.56
   - **记住上次连接**（默认关，仅 PIN）：客户端勾选后，PIN 握手成功记住 IP/端口/PIN
   - **固定 PIN**（默认关）：监听区「固定 PIN」+ 8 位输入，先输入再勾选
@@ -157,7 +171,7 @@ Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应
   - Android / uTools 尚未实现文件，发给它们会提示对端不支持
 
 - 2026.8.21——5.0.32
-  - `pack/README.md`；Linux/mac `./pack/pack.sh`；Windows PowerShell `.\pack\pack.ps1`（JAR + 绿色目录 + 本平台安装包）
+  - `pack/README.md`；Linux/mac `./pack/pack.sh`；Windows `pack\pack.bat`（JAR + 绿色目录 + 本平台安装包）
 
 - 2026.8.20——5.0.31
   - 客户端连接串可省略端口，默认 54300

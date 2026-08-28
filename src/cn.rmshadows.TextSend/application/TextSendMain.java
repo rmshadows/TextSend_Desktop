@@ -77,7 +77,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.56";
+    public static final String VERSION = "5.0.59";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -335,7 +335,7 @@ public class TextSendMain {
             comboIps.addItem(ip);
         }
         selectListenIpInCombo(preferIpAddr != null ? preferIpAddr.split(":")[0] : null);
-        fieldPort = new JTextField(serverListenPort, 5);
+        fieldPort = new JTextField(serverListenPort, 7);
         styleField(fieldPort);
 
         toggleMini = new JToggleButton("小窗");
@@ -349,8 +349,16 @@ public class TextSendMain {
         labelScale.setBackground(CARD);
         labelScale.setBorder(new EmptyBorder(2, 8, 2, 8));
         labelScale.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        labelScale.setToolTipText("鼠标放在这里滚轮缩放；Ctrl+滚轮细调 0.1%");
+        labelScale.setToolTipText("鼠标放在这里滚轮缩放；Ctrl+滚轮细调 0.1%；双击恢复 100%");
         installScaleWheel(labelScale);
+        labelScale.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1 && e.getClickCount() == 2) {
+                    applyUiScale(1f);
+                }
+            }
+        });
 
         buttonStart = new JButton(server ? "启动" : "连接");
         buttonRole = new JButton(server ? "客户端" : "服务端");
@@ -666,6 +674,19 @@ public class TextSendMain {
                 new EmptyBorder(4, 8, 4, 8)));
     }
 
+    /** 按数字宽度定框。Windows L&F 下 setPreferredSize 像素值常被列宽盖掉，必须同时 setColumns。 */
+    private static void sizeDigitField(JTextField f, int digits) {
+        f.setColumns(digits);
+        FontMetrics fm = f.getFontMetrics(f.getFont());
+        Insets in = f.getInsets();
+        int w = fm.charWidth('0') * digits + in.left + in.right + fm.charWidth('0');
+        int h = Math.max(UserConfig.s(28), fm.getHeight() + in.top + in.bottom);
+        Dimension d = new Dimension(w, h);
+        f.setPreferredSize(d);
+        f.setMinimumSize(d);
+        f.setMaximumSize(d);
+    }
+
     private static void wireServerStartButton() {
         for (var l : buttonStart.getMouseListeners()) {
             buttonStart.removeMouseListener(l);
@@ -673,21 +694,16 @@ public class TextSendMain {
         for (var l : buttonStart.getActionListeners()) {
             buttonStart.removeActionListener(l);
         }
+        buttonStart.setRolloverEnabled(true);
         buttonStart.addMouseListener(new MouseAdapter() {
             @Override
-            public void mouseClicked(MouseEvent e) {
-                if (startLongPressTriggered) {
-                    return;
-                }
-                maxConnection = e.getButton() == MouseEvent.BUTTON2 ? 7 : 1;
-                if (isServerRunning()) {
-                    stopServer();
-                } else {
-                    if (!miniMode) {
-                        syncPortFromField();
-                    }
-                    startServer(e.getButton() == MouseEvent.BUTTON1);
-                }
+            public void mouseEntered(MouseEvent e) {
+                buttonStart.getModel().setRollover(true);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent e) {
+                buttonStart.getModel().setRollover(false);
             }
 
             @Override
@@ -713,6 +729,26 @@ public class TextSendMain {
             public void mouseReleased(MouseEvent e) {
                 if (startLongPressTimer != null) {
                     startLongPressTimer.stop();
+                }
+                // 不用 mouseClicked：Windows 上按下后鼠标稍动/按钮跳 1px 就不会触发，像卡住。
+                if (startLongPressTriggered) {
+                    return;
+                }
+                int b = e.getButton();
+                if (b != MouseEvent.BUTTON1 && b != MouseEvent.BUTTON2 && b != MouseEvent.BUTTON3) {
+                    return;
+                }
+                if (!buttonStart.isEnabled() || !buttonStart.contains(e.getPoint())) {
+                    return;
+                }
+                maxConnection = b == MouseEvent.BUTTON2 ? 7 : 1;
+                if (isServerRunning()) {
+                    stopServer();
+                } else {
+                    if (!miniMode) {
+                        syncPortFromField();
+                    }
+                    startServer(b == MouseEvent.BUTTON1);
                 }
             }
         });
@@ -953,8 +989,7 @@ public class TextSendMain {
                 comboIps.setFont(comboIps.getFont().deriveFont((float) UserConfig.s(12)));
                 fieldPort.setFont(fieldPort.getFont().deriveFont((float) UserConfig.s(13)));
                 fieldPort.setForeground(TEXT);
-                fieldPort.setPreferredSize(new Dimension(UserConfig.s(72), UserConfig.s(28)));
-                fieldPort.setMinimumSize(new Dimension(UserConfig.s(72), UserConfig.s(28)));
+                sizeDigitField(fieldPort, 7);
                 netLeft.add(comboIps);
                 netLeft.add(new JLabel(":"));
                 netLeft.add(fieldPort);
@@ -975,10 +1010,10 @@ public class TextSendMain {
                 checkCustomPin = new JCheckBox("固定 PIN");
                 checkCustomPin.setOpaque(false);
                 checkCustomPin.setToolTipText("开启后每次启动服务端使用同一 8 位 PIN（默认关，随机生成）");
-                fieldCustomPin = new JTextField(UserConfig.getCustomPin(), Protocol.PIN_LEN);
+                fieldCustomPin = new JTextField(UserConfig.getCustomPin(), 10);
                 fieldCustomPin.setFont(fieldCustomPin.getFont().deriveFont((float) UserConfig.s(13)));
                 fieldCustomPin.setToolTipText("8 位数字");
-                fieldCustomPin.setPreferredSize(new Dimension(UserConfig.s(88), UserConfig.s(28)));
+                sizeDigitField(fieldCustomPin, 10);
                 checkCustomPin.setSelected(UserConfig.isCustomPinEnabled());
                 ((AbstractDocument) fieldCustomPin.getDocument()).setDocumentFilter(new DocumentFilter() {
                     @Override
@@ -1212,7 +1247,10 @@ public class TextSendMain {
         pct = Math.max(50f, Math.min(300f, pct));
         // 保留到 0.1%
         pct = Math.round(pct * 10f) / 10f;
-        float next = pct / 100f;
+        applyUiScale(pct / 100f);
+    }
+
+    private static void applyUiScale(float next) {
         if (Math.abs(next - UserConfig.getUiScale()) < 0.0005f) {
             return;
         }
@@ -1493,10 +1531,6 @@ public class TextSendMain {
 
     private static void clearCountPlaceholder() {
         inputShowingCount = false;
-    }
-
-    private static void showCountInInputIfIdle() {
-        // no-op：连接数显示在副按钮 (N)
     }
 
     /** 监听线程退出时回收界面（端口占用 / 绑定失败） */
@@ -1938,6 +1972,7 @@ public class TextSendMain {
 
                 —— 缩放 ——
                 · 鼠标放在标题旁的百分比上，滚轮 ±1%%；按住 Ctrl 时 ±0.1%%。
+                · 双击百分比：恢复 100%%。
                 · 范围 50%%–300%%，立刻写入配置文件。
 
                 —— 二维码 ——
@@ -1966,7 +2001,11 @@ public class TextSendMain {
     }
 
     private static void copyText(String text) {
-        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
+        try {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
+        } catch (Exception e) {
+            System.err.println("clipboard: " + e.getMessage());
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -3266,9 +3305,9 @@ public class TextSendMain {
                     KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
                     JComponent.WHEN_IN_FOCUSED_WINDOW);
             qrDialog.setVisible(true);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             e.printStackTrace();
-            flashStatus("二维码生成失败: " + e.getMessage());
+            flashStatus("二维码生成失败: " + e);
         }
     }
 
