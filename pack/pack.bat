@@ -1,5 +1,6 @@
 @echo off
-REM One-click Windows pack: fat JAR + portable dir + .exe installer
+REM One-click Windows pack: fat JAR + portable dir + .exe installer (WiX 3)
+REM For WiX 4/5 (JDK 24+): pack\pack-win-wix5.bat (do not rely on choose.bat 5 in PowerShell)
 REM Usage from TextSend_Desktop: pack\pack.bat
 setlocal EnableExtensions
 

@@ -1,8 +1,9 @@
 @echo off
-REM Windows .exe installer via jpackage. Needs WiX 3 (candle.exe + light.exe).
+REM Windows .exe installer via jpackage. WiX 3 only (candle.exe + light.exe).
+REM For WiX 4/5 (JDK 24+), use pack-win-wix5.bat or pack-win-choose.bat 5
 REM Usage: pack\pack-win.bat
 REM Output: dist\*.exe
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 call "%~dp0common.bat" || exit /b 1
 
@@ -20,6 +21,23 @@ if errorlevel 1 (
 call :find_wix
 if errorlevel 1 exit /b 1
 
+REM JDK 24+ prefers wix.exe over candle.exe. Inline (not call :label):
+REM cmd misses a second call-label when this file has Unix LF endings.
+set "NEWPATH="
+for %%A in ("%PATH:;=";"%") do (
+  set "DIR=%%~A"
+  if not "!DIR!"=="" (
+    if exist "!DIR!\wix.exe" (
+      echo Note: hiding !DIR!\wix.exe so jpackage stays on WiX 3
+    ) else if defined NEWPATH (
+      set "NEWPATH=!NEWPATH!;!DIR!"
+    ) else (
+      set "NEWPATH=!DIR!"
+    )
+  )
+)
+if defined NEWPATH set "PATH=!NEWPATH!"
+
 if "%SKIP_JAR%"=="1" (
   if not exist "%FAT_JAR%" call "%~dp0pack-jar.bat" || exit /b 1
 ) else (
@@ -30,7 +48,7 @@ if exist "%JPACKAGE_INPUT%" rmdir /s /q "%JPACKAGE_INPUT%"
 mkdir "%JPACKAGE_INPUT%"
 copy /Y "%FAT_JAR%" "%JPACKAGE_INPUT%\TextSend.jar" >nul
 
-echo ==^> jpackage exe
+echo ==^> jpackage exe (WiX 3)
 del /f /q "%DIST%\*.exe" 2>nul
 
 set "JP_MODULES=java.base,java.desktop,java.datatransfer,java.sql,java.xml,jdk.charsets"
@@ -76,9 +94,10 @@ if exist "%ProgramFiles(x86)%\WiX Toolset v3.11\bin\candle.exe" (
   echo Using WiX Toolset v3.11
   exit /b 0
 )
-echo Missing WiX. jpackage --type exe needs candle.exe and light.exe.
+echo Missing WiX 3. jpackage --type exe on this script needs candle.exe and light.exe.
 echo You already have binaries if this folder exists:
 echo   %USERPROFILE%\Program\wix311-binaries
 echo Add that folder to user PATH, or install WiX 3 from https://wixtoolset.org
+echo For WiX 4/5 (JDK 24+): pack\pack-win-wix5.bat
 echo JAR and portable zip do not need WiX; they are already in dist\
 exit /b 1

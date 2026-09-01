@@ -25,7 +25,7 @@ cd pack
 pack.bat
 ```
 
-也可以双击 `pack\pack.bat`。需要 JDK 17+ 和 Maven 已在 PATH 里。
+也可以双击 `pack\pack.bat`。需要 JDK 17+ 和 Maven 已在 PATH 里。一键脚本打出的 `.exe` 走 **WiX 3**。JDK 24+ / WiX 5 见下节。
 
 会打出 fat JAR、绿色目录（自带精简 JRE），再按**当前操作系统**打安装包：
 
@@ -48,14 +48,54 @@ Linux / macOS 用 `.sh`；Windows 用同名 `.bat`。
 | `pack-appimage.sh` / `pack-appimage.bat` | **不是** Linux `.AppImage`。是 `jpackage --type app-image` 绿色目录 | Linux/mac：目录 + `.tar.gz`；Windows：`dist\TextSend\` + `.zip` | 目标系统 |
 | `pack-deb.sh` | Debian 安装包 | `dist/*.deb` | **只能 Linux**（还要 `fakeroot`、`dpkg-deb`） |
 | `pack-mac.sh` | macOS 磁盘镜像 | `dist/*.dmg` | **只能 macOS** |
-| `pack-win.bat` | Windows 安装程序 | `dist/*.exe` | **只能 Windows cmd** |
-| `pack.sh` / `pack.bat` | 上面几项按平台串起来 | 见上 | 见上 |
+| `pack-win.bat` | Windows 安装程序（**WiX 3**，`candle.exe` / `light.exe`） | `dist/*.exe` | **只能 Windows cmd** |
+| `pack-win-wix5.bat` | Windows 安装程序（**WiX 4/5**，`wix.exe`，JDK 24+） | `dist/*.exe` | **只能 Windows cmd** |
+| `pack-win-choose.bat` | 选 WiX 3 或 4/5，再转到上面两个脚本 | `dist/*.exe` | **只能 Windows cmd** |
+| `pack.sh` / `pack.bat` | 上面几项按平台串起来（Windows 的 `.exe` 仍走 WiX 3） | 见上 | 见上 |
 
 `pack.sh` / `pack.bat` 会设 `SKIP_JAR=1`，避免绿色目录 / 安装包再 Maven 一遍。
 
+## Windows `.exe`（WiX 3 或 4/5）
+
+jpackage 打 `.exe` 必须用 WiX，**不能交叉编译**。JDK **25 支持 WiX 4 和 WiX 5**（`wix.exe`），**不是 WiX 7**。JDK 23 及更早只有 WiX 3。
+
+| 脚本 | WiX | JDK | 工具 |
+|------|-----|-----|------|
+| `pack.bat` / `pack-win.bat` | **3**（默认，保留） | 17+ | `candle.exe` + `light.exe` |
+| `pack-win-wix5.bat` | **4/5** | **24+** | `wix.exe` |
+| `pack-win-choose.bat` | 选 3 或 4/5 | 见上 | 转到上面两个脚本 |
+
+**WiX 5（推荐直接跑这个，不要靠参数）：**
+
+```bat
+pack\pack-win-wix5.bat
+```
+
+PowerShell 里 `.\pack-win-choose.bat 5` **经常把 `5` 丢掉**，脚本会当成 WiX 3 去找 `candle.exe`。要选版本时用 cmd：
+
+```bat
+cmd /c pack-win-choose.bat 5
+```
+
+无参数的 `pack-win-choose.bat` 会出菜单。环境变量 `WIX_VER=3` 或 `5` 也可。
+
+**装 WiX 3：** 官方安装器会设 `WIX`；或把 `wix311-binaries` 解压目录加到 PATH。`pack-win.bat` 会找 `%USERPROFILE%\Program\wix311-binaries`、WiX 3.14 / 3.11。本机若同时有 `wix.exe`，脚本会从**本次** PATH 里藏掉它，避免 JDK 24+ 的 jpackage 偷偷改用 WiX 5。
+
+**装 WiX 5：**
+
+```bat
+dotnet tool install --global wix
+wix extension add -g WixToolset.Util.wixext
+wix extension add -g WixToolset.UI.wixext
+```
+
+缺那两个扩展时，`wix` 常直接 exit **144**。`jpackage` 没有「强制用 WiX 3」的开关：PATH 里有 `wix.exe` 就会优先 4/5。
+
+`.bat` 在仓库里按 CRLF 保存（`.gitattributes`）。cmd 在仅 LF 的文件里，`call :标签` 常常第二次就报「找不到批处理标签」。
+
 ## 产物怎么用
 
-- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.59.jar`（版本号随 `TextSendMain.VERSION`）
+- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.60.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。见下「日常 / 调试启动器」。
 - **.deb**：打出两份，装一份即可（同名包，不要两个一起装）。一般装到 `/opt`。Fedora / Arch 请用绿色 `.tar.gz`
 - **.dmg / .exe**：本机安装器用。Mac 的 dmg 未签名，可能要右键打开
@@ -111,5 +151,5 @@ Linux / macOS 用 `.sh`；Windows 用同名 `.bat`。
 
 - 所有脚本：`java`（17+）、`mvn`
 - 绿色目录和安装包：`jpackage`（JDK 里自带，PATH 要能找到）
-- Windows `.exe`：还要 **WiX 3**（`candle.exe` + `light.exe`）。官方安装器会设 `WIX`；也可以把 `wix311-binaries` 解压目录加到 PATH。`pack-win.bat` 会自动找 `%USERPROFILE%\Program\wix311-binaries`
+- Windows `.exe`：要 WiX，见上「Windows `.exe`（WiX 3 或 4/5）」
 - `.deb`：`fakeroot`、`dpkg-deb`

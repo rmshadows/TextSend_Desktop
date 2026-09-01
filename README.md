@@ -35,6 +35,8 @@ Windows cmd（在 `TextSend_Desktop` 目录）：
 pack\pack.bat
 ```
 
+`.exe` 默认 **WiX 3**（`pack\pack.bat` / `pack-win.bat`）。JDK 24+ 用 WiX 5 时直接跑 `pack\pack-win-wix5.bat`。不要在 PowerShell 里 `.\pack-win-choose.bat 5`（参数常被丢掉，会误走 WiX 3）。详见 [`pack/README.md`](pack/README.md)「Windows `.exe`」。
+
 Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应系统上打，不能交叉编译。
 
 ### 界面功能
