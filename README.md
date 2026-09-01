@@ -1,6 +1,6 @@
  # TextSend_Desktop
 
- - Current Version: 5.0.59
+ - Current Version: 5.0.60
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 17 Swing Linux （Windows 可用打包脚本打 exe，本机未作为主测试平台。macOS 需在对应系统打包）
@@ -103,6 +103,11 @@ Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应
 ### 更新日志
 
 5.0.0 起为协议 v1（二进制帧 / AES-GCM / `ts://`），与旧 4.0.x JSON 协议不互通。
+
+- 2026.9.1——5.0.60
+  - 小窗服务端：有客户端连上后，顶栏从 IP 下拉换成输入框，可打字发送
+  - 大窗：窗口聚焦时点空白/打字/Ctrl+V 落到输入框（端口和固定 PIN 栏除外）；图片 Ctrl+V 仍先预览
+  - 大窗输入框可鼠标拖选文字，Ctrl+X / Ctrl+C 剪切复制（拖放文件不再盖掉系统选区）
 
 - 2026.8.28——5.0.59
   - 绿色版/安装包二维码：自带 JRE 补上 `jdk.charsets`（ZXing 要 EUC_JP）。jar/IDEA 本来就能弹，缺模块会崩。Windows / Linux / macOS 打包脚本已对齐

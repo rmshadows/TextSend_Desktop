@@ -27,8 +27,10 @@ import javax.swing.text.DefaultEditorKit;
 import javax.swing.text.JTextComponent;
 import javax.swing.undo.UndoManager;
 import java.awt.*;
+import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
+import java.awt.event.AWTEventListener;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.ActionEvent;
@@ -77,7 +79,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.59";
+    public static final String VERSION = "5.0.60";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -274,6 +276,7 @@ public class TextSendMain {
     private static JDialog qrDialog;
     /** 点「二维码」手动打开后，有客户端连上也不自动关。启动时弹出的二维码会在连上后关掉。 */
     private static boolean qrKeepOpen;
+    private static boolean windowInputHooks;
 
     public static int getServerListenPort() {
         return Integer.parseInt(serverListenPort);
@@ -299,6 +302,7 @@ public class TextSendMain {
             AppIcons.applyToTaskbar();
             applyLookAndFeelForMode();
             buildUi(true);
+            installWindowInputHooks();
         });
     }
 
@@ -1319,18 +1323,43 @@ public class TextSendMain {
                 + key + "</body></html>";
     }
 
-    /** 小窗共用区：服务端始终可换 IP，二维码/连接串跟着变 */
+    /** 小窗共用区：未启动选 IP；启动后显示 PIN（点复制）；有客户端后换成可输入文字 */
     private static void refreshMiniShared() {
         if (!miniMode || miniPanelText == null) {
             return;
         }
         miniPanelText.removeAll();
         if (isServerMode) {
-            comboIps.setBounds(0, 0, 122, 30);
-            comboIps.setEnabled(true);
-            wireIpComboTooltips();
-            miniPanelText.add(comboIps);
-            miniShowingPin = false;
+            if (!isServerRunning()) {
+                miniShowingPin = false;
+                comboIps.setBounds(0, 0, 122, 30);
+                comboIps.setEnabled(true);
+                wireIpComboTooltips();
+                miniPanelText.add(comboIps);
+            } else {
+                miniScroll.setBounds(0, 0, 122, 30);
+                if (connectedClients == 0) {
+                    miniShowingPin = true;
+                    miniTextArea.setEditable(false);
+                    setTextResetUndo(miniTextArea, pairingMaterial != null ? pairingMaterial.pin : "");
+                    miniTextArea.setToolTipText("点击复制完整连接串 ts://…");
+                    miniTextArea.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+                } else {
+                    if (miniShowingPin) {
+                        setTextResetUndo(miniTextArea, "");
+                        miniShowingPin = false;
+                    }
+                    miniTextArea.setEditable(true);
+                    miniTextArea.setToolTipText("输入文字后点发送");
+                    miniTextArea.setCursor(Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR));
+                    SwingUtilities.invokeLater(() -> {
+                        if (miniMode && miniTextArea != null && miniTextArea.isShowing()) {
+                            miniTextArea.requestFocusInWindow();
+                        }
+                    });
+                }
+                miniPanelText.add(miniScroll);
+            }
         } else {
             // 客户端小窗是 400×300 大文本区，布局在 applyOriginalClientMini 已搭好
             miniShowingPin = false;
@@ -1951,6 +1980,7 @@ public class TextSendMain {
                 · 点「置顶小窗」进入紧凑窗；Esc 回到大窗。
 
                 —— 输入 ——
+                · 大窗：窗口已聚焦时，点空白处或直接打字会进输入框；Ctrl+V 粘贴文字，图片仍先预览再发送。
                 · Ctrl+Z 撤销；Ctrl+Y 重做（也可用 Ctrl+Shift+Z）。Mac 用 Cmd。
                 · 文件：「浏览」左键 Java 对话框（可把文件拖进对话框，打开该文件所在文件夹）；右键用系统文件选择框。
                 · 文件按列表一个个发。发送中仍可浏览/拖入追加，队列里的会接着发。
@@ -1967,6 +1997,7 @@ public class TextSendMain {
                 · Ctrl+Shift+W / Ctrl+Q：退出程序
                 · Ctrl+Enter：发送（列表有选中则发文件；输入框有焦点则发文字）
                 · Ctrl+O：浏览添加文件（Java 对话框）
+                · Ctrl+V：窗口聚焦即可粘贴到输入框（不必先点输入框）；图片进预览
                 · Esc：小窗回到大窗
                 · F1：帮助
 
@@ -2013,6 +2044,10 @@ public class TextSendMain {
         if (c == null) {
             return;
         }
+        if (c instanceof JTextComponent tc) {
+            installTextAreaTransfer(tc);
+            return;
+        }
         c.setTransferHandler(new TransferHandler() {
             @Override
             public boolean canImport(TransferSupport support) {
@@ -2050,6 +2085,68 @@ public class TextSendMain {
                     flashStatus("拖入失败: " + e.getMessage());
                 }
                 return false;
+            }
+        });
+    }
+
+    /**
+     * 输入框保留系统剪切/复制/选中，同时还能拖入文件和图片。
+     * 直接 setTransferHandler 会盖掉 JTextArea 自带的，鼠标拖选和 Ctrl+X 会坏。
+     */
+    private static void installTextAreaTransfer(JTextComponent tc) {
+        TransferHandler text = (TransferHandler) tc.getClientProperty("ts.textTh");
+        if (text == null) {
+            text = tc.getTransferHandler();
+            tc.putClientProperty("ts.textTh", text);
+        }
+        TransferHandler textTh = text;
+        tc.setDragEnabled(false);
+        tc.setTransferHandler(new TransferHandler() {
+            @Override
+            public boolean canImport(TransferSupport support) {
+                if (support.isDataFlavorSupported(DataFlavor.imageFlavor)
+                        || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    return true;
+                }
+                return textTh != null && textTh.canImport(support);
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public boolean importData(TransferSupport support) {
+                try {
+                    if (support.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+                        Object data = support.getTransferable().getTransferData(DataFlavor.imageFlavor);
+                        BufferedImage img = data instanceof BufferedImage bi ? bi
+                                : PasteUtil.toBuffered(data instanceof Image im ? im : null);
+                        if (offerPasteImage(img)) {
+                            return true;
+                        }
+                    }
+                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        List<File> files = (List<File>) support.getTransferable()
+                                .getTransferData(DataFlavor.javaFileListFlavor);
+                        enqueueFiles(new ArrayList<>(files));
+                        return true;
+                    }
+                } catch (Exception e) {
+                    flashStatus("拖入失败: " + e.getMessage());
+                    return false;
+                }
+                return textTh != null && textTh.importData(support);
+            }
+
+            @Override
+            public int getSourceActions(JComponent comp) {
+                return NONE;
+            }
+
+            @Override
+            public void exportToClipboard(JComponent comp, Clipboard clip, int action)
+                    throws IllegalStateException {
+                if (textTh != null) {
+                    textTh.exportToClipboard(comp, clip, action);
+                }
             }
         });
     }
@@ -3073,10 +3170,7 @@ public class TextSendMain {
         am.put("ts-paste-smart", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                if (offerPasteImage(PasteUtil.getClipboardImage())) {
-                    return;
-                }
-                area.paste();
+                pasteInto(area);
             }
         });
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "ts-backspace");
@@ -3093,6 +3187,127 @@ public class TextSendMain {
                 }
             }
         });
+    }
+
+    /** 图片进预览，文字进输入框（走系统粘贴，保留选区替换）。 */
+    private static void pasteInto(JTextComponent area) {
+        if (area == null) {
+            return;
+        }
+        if (offerPasteImage(PasteUtil.getClipboardImage())) {
+            return;
+        }
+        area.paste();
+    }
+
+    private static JTextComponent messageInput() {
+        if (miniMode) {
+            return miniTextArea != null && miniTextArea.isEditable() && miniTextArea.isShowing()
+                    ? miniTextArea : null;
+        }
+        return areaMessage;
+    }
+
+    private static boolean isDedicatedTextField(Component c) {
+        return c instanceof JTextComponent tc
+                && tc != areaMessage
+                && tc != miniTextArea;
+    }
+
+    private static boolean isClickInteractive(Component c) {
+        while (c != null) {
+            if (c instanceof AbstractButton || c instanceof JComboBox || c instanceof JTable
+                    || c instanceof JList || c instanceof JTextComponent || c instanceof JScrollBar
+                    || c instanceof JSlider) {
+                return true;
+            }
+            c = c.getParent();
+        }
+        return false;
+    }
+
+    /** 窗口已聚焦时：点空白/打字/Ctrl+V 落到输入框（端口、固定 PIN 等输入栏除外）。 */
+    private static void installWindowInputHooks() {
+        if (windowInputHooks) {
+            return;
+        }
+        windowInputHooks = true;
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(e -> {
+            if (frame == null || !frame.isDisplayable() || !frame.isFocused()) {
+                return false;
+            }
+            Component fo = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+            if (fo != null && !SwingUtilities.isDescendingFrom(fo, frame)) {
+                return false;
+            }
+            if (isDedicatedTextField(fo)) {
+                return false;
+            }
+            JTextComponent input = messageInput();
+            if (input == null) {
+                return false;
+            }
+            int menu = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+            if (e.getID() == KeyEvent.KEY_PRESSED
+                    && e.getKeyCode() == KeyEvent.VK_V
+                    && (e.getModifiersEx() & (menu | InputEvent.CTRL_DOWN_MASK | InputEvent.META_DOWN_MASK)) != 0) {
+                if (fo != input) {
+                    input.requestFocusInWindow();
+                    pasteInto(input);
+                    return true;
+                }
+                return false;
+            }
+            if (e.getID() == KeyEvent.KEY_PRESSED
+                    && !e.isControlDown() && !e.isMetaDown() && !e.isAltDown()
+                    && fo != input) {
+                int vk = e.getKeyCode();
+                if (vk != KeyEvent.VK_TAB && vk != KeyEvent.VK_ESCAPE && vk != KeyEvent.VK_ENTER
+                        && vk != KeyEvent.VK_SHIFT && vk != KeyEvent.VK_CONTROL
+                        && vk != KeyEvent.VK_ALT && vk != KeyEvent.VK_META
+                        && vk != KeyEvent.VK_WINDOWS && vk != KeyEvent.VK_CONTEXT_MENU
+                        && vk != KeyEvent.VK_BACK_SPACE && vk != KeyEvent.VK_DELETE
+                        && vk != KeyEvent.VK_LEFT && vk != KeyEvent.VK_RIGHT
+                        && vk != KeyEvent.VK_UP && vk != KeyEvent.VK_DOWN
+                        && vk != KeyEvent.VK_HOME && vk != KeyEvent.VK_END
+                        && vk != KeyEvent.VK_PAGE_UP && vk != KeyEvent.VK_PAGE_DOWN
+                        && vk != KeyEvent.VK_F1 && vk != KeyEvent.VK_UNDEFINED) {
+                    input.requestFocusInWindow();
+                }
+            }
+            if (e.getID() == KeyEvent.KEY_TYPED
+                    && !e.isControlDown() && !e.isMetaDown() && !e.isAltDown()
+                    && fo != input) {
+                char ch = e.getKeyChar();
+                if (ch >= 0x20 && ch != KeyEvent.CHAR_UNDEFINED) {
+                    input.requestFocusInWindow();
+                    input.replaceSelection(String.valueOf(ch));
+                    return true;
+                }
+            }
+            return false;
+        });
+        Toolkit.getDefaultToolkit().addAWTEventListener(ev -> {
+            if (!(ev instanceof MouseEvent me) || me.getID() != MouseEvent.MOUSE_PRESSED) {
+                return;
+            }
+            if (me.getButton() != MouseEvent.BUTTON1) {
+                return;
+            }
+            if (frame == null || miniMode || !frame.isDisplayable()) {
+                return;
+            }
+            Component src = me.getComponent();
+            if (src == null || !SwingUtilities.isDescendingFrom(src, frame)) {
+                return;
+            }
+            if (isClickInteractive(src) || isDedicatedTextField(src)) {
+                return;
+            }
+            if (areaMessage != null && areaMessage.isShowing()) {
+                areaMessage.requestFocusInWindow();
+            }
+        }, AWTEvent.MOUSE_EVENT_MASK);
     }
 
     private static boolean offerPasteImage(BufferedImage img) {
