@@ -1,6 +1,6 @@
  # TextSend_Desktop
 
- - Current Version: 5.0.60
+ - Current Version: 5.0.61
  - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 17 Swing Linux （Windows 可用打包脚本打 exe，本机未作为主测试平台。macOS 需在对应系统打包）
@@ -21,7 +21,7 @@ Gradle是非模块化的项目
 
 ### 打包
 
-说明和各脚本用途见 [`pack/README.md`](pack/README.md)。
+说明和各脚本用途见 [`pack/README.md`](pack/README.md)。GitHub **Actions → Pack** 可手动打三端包（不自动跑）。
 
 Linux / macOS：
 
@@ -52,7 +52,7 @@ Linux 会多出 `.deb`；Windows 打 `.exe`；macOS 打 `.dmg`。必须在对应
 
 - 拖入或「浏览」加入待发列表，**选中后再发**。一次最多 50 个扁文件。主界面不收文件夹。
 - 「浏览」左键 Java 对话框（可把文件拖进对话框，打开该文件所在文件夹）；右键用系统文件选择框。Shift+左键打勾选 **多个文件夹**（按相对路径重建，不是同步；`.logger` 这类隐藏目录会带上）。也可把文件夹拖进窗口。
-- 对面落到系统「下载/TextSend」，不弹保存框；重名自动 `name (1).ext`。
+- 对面落到系统「下载/TextSend」，不弹保存框；重名自动 `name (1).ext`。大窗待发区点「下载目录」（或列表右键）用资源管理器打开本机该文件夹。
 - 发送中仍可往列表加文件，会接着发。底栏有进度、实时速度和「取消」（发/收都能停）。
 - 发文件夹时进度显示 `3/40` 和第几个文件的百分比。
 - 断线可续传（认文件头+尾哈希；对不上则从头）。发送方点取消会留下半截，再发同一文件接着传；接收方点取消才删半截。

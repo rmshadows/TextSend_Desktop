@@ -4,6 +4,20 @@
 
 产物都在 `dist/`。
 
+## GitHub Actions（手动）
+
+仓库 **Actions → Pack → Run workflow**。只响应 `workflow_dispatch`，push / PR **不会**自动打。
+
+可选平台：`all` / `linux` / `windows` / `macos`（各跑本机 `pack.sh` 或 `pack.bat`，不能交叉编译）。
+
+| 平台 | runner | 产物（上传为 artifact，保留 14 天） |
+|------|--------|--------------------------------------|
+| Linux | `ubuntu-latest` | `.jar`、绿色 `.tar.gz`、`.deb`（含 compat） |
+| Windows | `windows-latest` | `.jar`、绿色 `.zip`、`.exe`（**WiX 3**，与本地 `pack.bat` 相同） |
+| macOS | `macos-latest` | `.jar`、绿色 `.tar.gz`、`.dmg`（未签名） |
+
+跑完后在该次 run 的 **Artifacts** 里下载。不自动建 GitHub Release。
+
 ## 一键
 
 **Linux / macOS（bash）：**

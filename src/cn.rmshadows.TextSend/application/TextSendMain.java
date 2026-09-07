@@ -79,7 +79,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.60";
+    public static final String VERSION = "5.0.61";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -256,6 +256,7 @@ public class TextSendMain {
     private static JPanel filePanel;
     private static JLabel labelFileQueue;
     private static JButton buttonBrowse;
+    private static JButton buttonInbox;
     private static JButton buttonRemoveFiles;
     private static File lastFileChooserDir;
     /** 待发列表默认收起，点标题或把文件拖进输入框再展开 */
@@ -1134,6 +1135,9 @@ public class TextSendMain {
             if (buttonBrowse != null) {
                 fixToolbarButton(buttonBrowse, 72);
             }
+            if (buttonInbox != null) {
+                fixToolbarButton(buttonInbox, 96);
+            }
             fixToolbarButton(buttonRemoveFiles, 72);
             scrollFiles.setAlignmentX(Component.LEFT_ALIGNMENT);
             filePanel.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -1986,7 +1990,7 @@ public class TextSendMain {
                 · 文件按列表一个个发。发送中仍可浏览/拖入追加，队列里的会接着发。
                 · 列表里可点选、Ctrl 多选、Shift 连选、Ctrl+A 全选、Delete 移除。
                 · 选中后点「发送」。发送中浏览/拖入会追加并接着发；没选中的不会自动捎上，可再选中点发送。
-                · 对面落到「下载/TextSend」（重名自动加 (1)），不弹保存框。
+                · 对面落到「下载/TextSend」（重名自动加 (1)），不弹保存框。点「下载目录」用资源管理器打开本机该文件夹。
                 · 图片 ≤20MB：PC 写入剪贴板可直接粘贴；更大的当文件保存。
                 · 本机 Ctrl+V 图片会先出现在输入区预览，点缩略图或「查看大图」可看原图，点「发送」才传；Backspace 清除预览。
                 · Shift+「浏览」打勾选多个文件夹，按相对路径在对面重建（软链默认不跟随，列表旁可开）。隐藏目录（如 .logger）会带上。进度显示 3/40。
@@ -2160,6 +2164,9 @@ public class TextSendMain {
             if (buttonBrowse != null) {
                 buttonBrowse.updateUI();
             }
+            if (buttonInbox != null) {
+                buttonInbox.updateUI();
+            }
             if (buttonRemoveFiles != null) {
                 buttonRemoveFiles.updateUI();
             }
@@ -2253,6 +2260,13 @@ public class TextSendMain {
                 pickWithSystemDialog();
             }
         });
+        popup.addSeparator();
+        popup.add(new AbstractAction("打开下载目录") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                openInboxDir();
+            }
+        });
         fileTable.setComponentPopupMenu(popup);
 
         scrollFiles = new JScrollPane(fileTable);
@@ -2287,9 +2301,15 @@ public class TextSendMain {
                 }
             }
         });
+        buttonInbox = new JButton("下载目录");
+        buttonInbox.setToolTipText("打开本机「下载/TextSend」（收到的文件落在这里）");
+        buttonInbox.addActionListener(e -> openInboxDir());
+        fixToolbarButton(buttonInbox, 96);
         buttonRemoveFiles = new JButton("移除");
         buttonRemoveFiles.setToolTipText("从列表去掉所选（不删磁盘上的文件）");
         buttonRemoveFiles.addActionListener(e -> removeSelectedQueuedFiles());
+        fixToolbarButton(buttonBrowse, 72);
+        fixToolbarButton(buttonRemoveFiles, 72);
         checkFollowLinks = new JCheckBox("软链");
         checkFollowLinks.setOpaque(false);
         checkFollowLinks.setToolTipText("发送文件夹时跟随符号链接（默认关）");
@@ -2303,6 +2323,7 @@ public class TextSendMain {
         fileBtns.setOpaque(false);
         fileBtns.add(checkFollowLinks);
         fileBtns.add(buttonBrowse);
+        fileBtns.add(buttonInbox);
         fileBtns.add(buttonRemoveFiles);
         fileHead.add(fileBtns, BorderLayout.EAST);
 
@@ -2623,6 +2644,45 @@ public class TextSendMain {
             for (Component child : box.getComponents()) {
                 applyTransferHandlerDeep(child, th);
             }
+        }
+    }
+
+    /** 用系统文件管理器打开「下载/TextSend」。 */
+    private static void openInboxDir() {
+        try {
+            Path dir = FileNames.inboxDir();
+            if (Desktop.isDesktopSupported()
+                    && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+                Desktop.getDesktop().open(dir.toFile());
+                flashStatus("已打开 下载/" + FileNames.FOLDER);
+                return;
+            }
+            if (!openInboxFallback(dir)) {
+                flashStatus("无法打开: " + dir);
+            } else {
+                flashStatus("已打开 下载/" + FileNames.FOLDER);
+            }
+        } catch (Exception e) {
+            flashStatus("无法打开下载目录: " + e.getMessage());
+        }
+    }
+
+    /** Desktop.OPEN 不可用时：Windows explorer / macOS open / Linux xdg-open。 */
+    private static boolean openInboxFallback(Path dir) {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        try {
+            ProcessBuilder pb;
+            if (os.contains("win")) {
+                pb = new ProcessBuilder("explorer.exe", dir.toAbsolutePath().toString());
+            } else if (os.contains("mac")) {
+                pb = new ProcessBuilder("open", dir.toAbsolutePath().toString());
+            } else {
+                pb = new ProcessBuilder("xdg-open", dir.toAbsolutePath().toString());
+            }
+            pb.start();
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 

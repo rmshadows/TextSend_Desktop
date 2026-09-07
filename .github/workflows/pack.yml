@@ -1,0 +1,130 @@
+# 手动打安装包 / 绿色包（走仓库里的 pack/ 脚本，不自动跑）
+# Actions → Pack → Run workflow
+name: Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which OS to pack (cannot cross-compile)
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - macos
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-${{ github.ref }}-${{ github.event.inputs.platform }}
+  cancel-in-progress: true
+
+jobs:
+  pack-linux:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Install deb tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+
+      - name: Pack (./pack/pack.sh)
+        run: |
+          chmod +x pack/*.sh
+          ./pack/pack.sh
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextSend-linux
+          path: |
+            dist/*.jar
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  pack-windows:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      # pack-win.bat 会找 %USERPROFILE%\Program\wix311-binaries
+      - name: Install WiX 3 binaries
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "wix314-binaries.zip"
+          $dest = Join-Path $env:USERPROFILE "Program\wix311-binaries"
+          Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip" -OutFile $zip
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          if (-not (Test-Path (Join-Path $dest "candle.exe"))) {
+            throw "candle.exe missing under $dest"
+          }
+          Write-Host "WiX 3 at $dest"
+
+      - name: Pack (pack\pack.bat → WiX 3)
+        shell: cmd
+        run: pack\pack.bat
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextSend-windows
+          path: |
+            dist/*.jar
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  pack-macos:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Pack (./pack/pack.sh)
+        run: |
+          chmod +x pack/*.sh
+          ./pack/pack.sh
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextSend-macos
+          path: |
+            dist/*.jar
+            dist/*.tar.gz
+            dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
