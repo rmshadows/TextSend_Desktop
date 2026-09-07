@@ -11,6 +11,8 @@ on:
         options:
           - all
           - linux
+          - linux-amd64
+          - linux-arm64
           - windows
           - macos
         default: all
@@ -23,32 +25,85 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pack-linux:
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
-    runs-on: ubuntu-latest
+  # Ubuntu 24.04 x64。jpackage 原版 .deb Depends 按本机扫库（常含 libasound2t64，接近 Debian 13）；另打 *.compat.deb
+  pack-linux-amd64:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-amd64' }}
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
           cache: maven
 
       - name: Install deb tools
-        run: sudo apt-get update && sudo apt-get install -y fakeroot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot dpkg-dev
+          echo "LANG=${LANG:-}"
+          . /etc/os-release
+          echo "OS=$PRETTY_NAME"
+          uname -m
 
       - name: Pack (./pack/pack.sh)
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
         run: |
           chmod +x pack/*.sh
           ./pack/pack.sh
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux amd64 artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TextSend-linux
+          name: TextSend-linux-amd64
+          path: |
+            dist/*.jar
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  # Ubuntu 24.04 arm64（公开仓库免费 runner）。私有仓此标签不可用。
+  pack-linux-arm64:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-arm64' }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install deb tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot dpkg-dev
+          echo "LANG=${LANG:-}"
+          . /etc/os-release
+          echo "OS=$PRETTY_NAME"
+          uname -m
+
+      - name: Pack (./pack/pack.sh)
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          chmod +x pack/*.sh
+          ./pack/pack.sh
+
+      - name: Upload Linux arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextSend-linux-arm64
           path: |
             dist/*.jar
             dist/*.tar.gz
@@ -63,11 +118,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
           cache: maven
 
       # pack-win.bat 会找 %USERPROFILE%\Program\wix311-binaries
@@ -106,11 +161,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
           cache: maven
 
       - name: Pack (./pack/pack.sh)

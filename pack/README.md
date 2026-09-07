@@ -8,13 +8,18 @@
 
 仓库 **Actions → Pack → Run workflow**。只响应 `workflow_dispatch`，push / PR **不会**自动打。
 
-可选平台：`all` / `linux` / `windows` / `macos`（各跑本机 `pack.sh` 或 `pack.bat`，不能交叉编译）。
+可选平台：`all` / `linux`（amd64+arm64）/ `linux-amd64` / `linux-arm64` / `windows` / `macos`。各跑本机 `pack.sh` 或 `pack.bat`，**不能交叉编译**。
 
-| 平台 | runner | 产物（上传为 artifact，保留 14 天） |
-|------|--------|--------------------------------------|
-| Linux | `ubuntu-latest` | `.jar`、绿色 `.tar.gz`、`.deb`（含 compat） |
-| Windows | `windows-latest` | `.jar`、绿色 `.zip`、`.exe`（**WiX 3**，与本地 `pack.bat` 相同） |
-| macOS | `macos-latest` | `.jar`、绿色 `.tar.gz`、`.dmg`（未签名） |
+| 平台 | runner | 产物（Artifact，保留 14 天） |
+|------|--------|------------------------------|
+| Linux amd64 | **Ubuntu 24.04** x64 | `.jar`、绿色 `.tar.gz`、`.deb` + `*.compat.deb` → `TextSend-linux-amd64` |
+| Linux arm64 | **Ubuntu 24.04** arm64（`ubuntu-24.04-arm`） | 同上 → `TextSend-linux-arm64` |
+| Windows | `windows-latest` | `.jar`、绿色 `.zip`、`.exe`（WiX 3）→ `TextSend-windows` |
+| macOS | `macos-latest` | `.jar`、绿色 `.tar.gz`、`.dmg`（未签名）→ `TextSend-macos` |
+
+**Linux /「Debian 多少」**：runner 是 **Ubuntu 24.04**，不是 Debian 安装盘。原版 `.deb` 的 Depends 由 jpackage **按打包机扫库名**（24.04 上常带 `libasound2t64`，和 **Debian 13** 一类命名接近）。另打的 `*.compat.deb` 写死宽松 Depends（`libasound2 | libasound2t64`），给 Debian 12/13、Ubuntu 22.04/24.04。Fedora/Arch 请用绿色 `.tar.gz`。
+
+**别人能不能下**：本仓库是 **公开** 的。任何人打开该次 Actions run 页面就能下 Artifact（一般要登录 GitHub）。**不是** Release 附件，默认 **14 天过期**，也不会出现在 Releases 页。要长期公开下载需另建 GitHub Release 并挂文件。
 
 跑完后在该次 run 的 **Artifacts** 里下载。不自动建 GitHub Release。
 
@@ -133,7 +138,7 @@ wix extension add -g WixToolset.UI.wixext
 | 文件 | Depends | 给谁 |
 |------|---------|------|
 | `textsend_<版本>_<架构>.deb` | jpackage **按打包机扫库名**（Debian 13 上会带 `libasound2t64`） | 和打包机同一代的 Debian / Ubuntu |
-| `textsend_<版本>_<架构>.compat.deb` | 写死 `libasound2 \| libasound2t64` 等宽松依赖 | Debian 12 / 13、Ubuntu 22.04 / 24.04 |
+| `textsend_<版本>_<架构>.compat.deb` | 写死 `libasound2 \| libasound2t64` 等宽松依赖（从原版解包改 Depends，不再二次 jpackage） | Debian 12 / 13、Ubuntu 22.04 / 24.04 |
 
 内容一样，只是 control 不同。宽松模板在 `pack/jpackage-resources/control`，只在打 compat 时拷进临时 resource-dir。
 
