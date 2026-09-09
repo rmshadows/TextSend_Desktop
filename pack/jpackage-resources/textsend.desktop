@@ -1,10 +1,10 @@
 [Desktop Entry]
+Type=Application
 Name=TextSend
 Comment=局域网文字互传
 Exec=/opt/textsend/bin/TextSend
-Icon=/opt/textsend/lib/TextSend.png
+Icon=/usr/share/pixmaps/textsend.png
 Terminal=false
-Type=Application
 Categories=Utility;
 StartupWMClass=TextSend
 StartupNotify=true

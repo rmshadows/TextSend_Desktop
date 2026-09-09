@@ -57,6 +57,21 @@ jobs:
           chmod +x pack/*.sh
           ./pack/pack.sh
 
+      - name: Verify .deb has application menu entry
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(dist/*.deb)
+          if [[ ${#debs[@]} -eq 0 ]]; then
+            echo "no .deb in dist/" >&2
+            exit 1
+          fi
+          for deb in "${debs[@]}"; do
+            echo "==> $deb"
+            dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend.desktop'
+            dpkg-deb -c "$deb" | grep 'usr/share/pixmaps/textsend.png'
+          done
+
       - name: Upload Linux amd64 artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -99,6 +114,21 @@ jobs:
         run: |
           chmod +x pack/*.sh
           ./pack/pack.sh
+
+      - name: Verify .deb has application menu entry
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(dist/*.deb)
+          if [[ ${#debs[@]} -eq 0 ]]; then
+            echo "no .deb in dist/" >&2
+            exit 1
+          fi
+          for deb in "${debs[@]}"; do
+            echo "==> $deb"
+            dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend.desktop'
+            dpkg-deb -c "$deb" | grep 'usr/share/pixmaps/textsend.png'
+          done
 
       - name: Upload Linux arm64 artifacts
         uses: actions/upload-artifact@v4

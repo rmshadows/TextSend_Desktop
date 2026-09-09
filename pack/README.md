@@ -116,7 +116,7 @@ wix extension add -g WixToolset.UI.wixext
 
 - **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.60.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。见下「日常 / 调试启动器」。
-- **.deb**：打出两份，装一份即可（同名包，不要两个一起装）。一般装到 `/opt`。Fedora / Arch 请用绿色 `.tar.gz`
+- **.deb**：打出两份，装一份即可（同名包，不要两个一起装）。一般装到 `/opt`，开始菜单入口是 `/usr/share/applications/textsend.desktop`。Fedora / Arch 请用绿色 `.tar.gz`
 - **.dmg / .exe**：本机安装器用。Mac 的 dmg 未签名，可能要右键打开
 
 ### 日常 / 调试启动器
@@ -155,9 +155,9 @@ wix extension add -g WixToolset.UI.wixext
 | 打包（macOS dmg） | `other/icon.icns` | 打 dmg 时若无则从 png 自动生成 |
 | 运行中窗口 / 任务栏 | `src/cn.rmshadows.TextSend/resources/icon.png` | 打进 fat JAR，`AppIcons` 加载 |
 
-**fat JAR 文件本身**在文件管理器里仍是 Java 归档图标；运行后窗口和任务栏会有应用图标。`.deb` / 绿色目录 / 安装包菜单项靠 `jpackage --icon`。
+**fat JAR 文件本身**在文件管理器里仍是 Java 归档图标；运行后窗口和任务栏会有应用图标。`.deb` 菜单项来自 `pack/jpackage-resources/textsend.desktop`，打进 `/usr/share/applications/textsend.desktop`（不只靠 jpackage 的 `xdg-desktop-menu`）。
 
-**GNOME 任务栏**：jpackage 默认 `.desktop` 不含 `StartupWMClass`，Dock 会显示通用 Java 图标。已用 `pack/jpackage-resources/TextSend.desktop`（`StartupWMClass=TextSend`）+ 运行时 `LinuxWmClass` 固定 WM_CLASS。改 deb 后需重装；若菜单仍无条目可执行 `xdg-desktop-menu install /opt/textsend/lib/textsend-TextSend.desktop`。
+**GNOME 任务栏**：jpackage 默认 `.desktop` 不含 `StartupWMClass`，Dock 会显示通用 Java 图标。已用 `pack/jpackage-resources/TextSend.desktop`（`StartupWMClass=TextSend`）+ 运行时 `LinuxWmClass` 固定 WM_CLASS。改 deb 后需重装。
 
 ## 还没有的
 
