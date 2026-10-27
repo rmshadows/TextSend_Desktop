@@ -51,8 +51,14 @@ if errorlevel 1 (
 
 echo OK %DIST%\TextSend\
 echo OK %ARCHIVE%
-if exist "%DIST%\TextSend\TextSend-console.exe" (
-  echo Debug: %DIST%\TextSend\TextSend-console.exe
+if not exist "%DIST%\TextSend\TextSend.exe" (
+  echo Missing %DIST%\TextSend\TextSend.exe
+  exit /b 1
 )
+if not exist "%DIST%\TextSend\TextSend-console.exe" (
+  echo Missing CLI launcher %DIST%\TextSend\TextSend-console.exe
+  exit /b 1
+)
+echo CLI: %DIST%\TextSend\TextSend-console.exe
 
 endlocal

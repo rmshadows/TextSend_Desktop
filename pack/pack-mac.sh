@@ -79,6 +79,12 @@ if [[ ${#dmgs[@]} -ne 1 ]]; then
 fi
 INSTALLER_DMG="$DIST/TextSend-${VERSION}-macos-installer.dmg"
 mv -f "${dmgs[0]}" "$INSTALLER_DMG"
+if [[ -d "$DIST/TextSend.app" ]]; then
+  if [[ ! -x "$DIST/TextSend.app/Contents/MacOS/TextSend" || ! -x "$DIST/TextSend.app/Contents/MacOS/TextSend-console" ]]; then
+    echo "缺少 TextSend.app 里的日常启动器或 TextSend-console" >&2
+    exit 1
+  fi
+fi
 echo "OK  $INSTALLER_DMG"
 echo "日常：安装后的 TextSend.app"
 echo "调试：TextSend.app/Contents/MacOS/TextSend-console（终端跑可看 Log）"

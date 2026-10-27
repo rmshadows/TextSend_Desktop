@@ -6,6 +6,8 @@
 #   dist/TextSend-<ver>-linux-<arch>-installer-compat.deb  — 宽松：libasound2 | libasound2t64（Debian 12/13、Ubuntu）
 #
 # compat 不二次 jpackage（JDK 17 + Actions 上易 dpkg-deb exit 2）：从原版解包改 Depends 再打。
+# 重打包不用 fakeroot：Ubuntu 24.04 上 fakeroot + dpkg-deb（zstd）会把 tar 管道打断，
+# 报 tar: stdout: write error / exit 2，amd64 上更容易出现。改用 --root-owner-group 和 gzip。
 # 菜单项：jpackage 只把 .desktop 放在 /opt/.../lib/ 并靠 postinst 的 xdg-desktop-menu，
 # Debian/Ubuntu 上经常装完没有开始菜单入口。解包后写入 /usr/share/applications/。
 #
@@ -20,7 +22,6 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 need jpackage
-need fakeroot
 need dpkg-deb
 
 # jpackage 只把 .desktop 放进 /opt/textsend/lib/，靠 xdg-desktop-menu 注册；
@@ -30,7 +31,15 @@ inject_menu_entry() {
   local apps="$root/usr/share/applications"
   local pixmaps="$root/usr/share/pixmaps"
   local menu_src="$PACK_DIR/jpackage-resources/textsend.desktop"
+  local cli_src="$PACK_DIR/jpackage-resources/textsend-cli.desktop"
   mkdir -p "$apps" "$pixmaps"
+
+  if [[ ! -f "$cli_src" ]]; then
+    echo "缺少 $cli_src" >&2
+    exit 1
+  fi
+  cp -f "$cli_src" "$apps/textsend-cli.desktop"
+  chmod 644 "$apps/textsend-cli.desktop"
 
   if [[ -f "$menu_src" ]]; then
     cp -f "$menu_src" "$apps/textsend.desktop"
@@ -104,10 +113,40 @@ refresh_deb_metadata() {
 
 assert_deb_has_menu() {
   local deb="$1"
-  if ! dpkg-deb -c "$deb" | grep -q 'usr/share/applications/textsend.desktop'; then
+  local listing
+  listing="$(dpkg-deb -c "$deb")" || {
+    echo "$deb 无法列出内容" >&2
+    exit 1
+  }
+  if ! grep -q 'usr/share/applications/textsend.desktop' <<<"$listing"; then
     echo "$deb 缺少 /usr/share/applications/textsend.desktop" >&2
     exit 1
   fi
+  if ! grep -q 'usr/share/applications/textsend-cli.desktop' <<<"$listing"; then
+    echo "$deb 缺少 /usr/share/applications/textsend-cli.desktop" >&2
+    exit 1
+  fi
+  if ! grep -q 'opt/textsend/bin/TextSend$' <<<"$listing"; then
+    echo "$deb 缺少 /opt/textsend/bin/TextSend" >&2
+    exit 1
+  fi
+  if ! grep -q 'opt/textsend/bin/TextSend-console$' <<<"$listing"; then
+    echo "$deb 缺少 /opt/textsend/bin/TextSend-console" >&2
+    exit 1
+  fi
+}
+
+# 写到临时文件再换上，避免失败时把原包截断。gzip 避开 zstd 管道在 Actions 上被打断。
+rebuild_deb() {
+  local root="$1"
+  local out="$2"
+  local tmp
+  tmp="$(mktemp "${out}.XXXXXX")"
+  if ! dpkg-deb --root-owner-group -Zgzip -b "$root" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$out"
 }
 
 # dpkg 解析 control 需要 UTF-8（描述里有中文）
@@ -200,7 +239,7 @@ if [[ ! -f "$CONTROL" ]]; then
 fi
 inject_menu_entry "$TMP_ROOT"
 refresh_deb_metadata "$TMP_ROOT"
-if ! fakeroot dpkg-deb -b "$TMP_ROOT" "$ORIG_DEB"; then
+if ! rebuild_deb "$TMP_ROOT" "$ORIG_DEB"; then
   echo "写入菜单项后重打原版 .deb 失败" >&2
   rm -rf "$TMP_ROOT"
   exit 1
@@ -219,7 +258,7 @@ if [[ -n "$(tail -c1 "$CONTROL" || true)" ]]; then
 fi
 
 COMPAT_OUT="$DIST/${BASE}.compat.deb"
-if ! fakeroot dpkg-deb -b "$TMP_ROOT" "$COMPAT_OUT"; then
+if ! rebuild_deb "$TMP_ROOT" "$COMPAT_OUT"; then
   echo "compat dpkg-deb 失败，control 内容：" >&2
   cat "$CONTROL" >&2 || true
   rm -rf "$TMP_ROOT"
@@ -240,6 +279,7 @@ echo "安装包（本机扫库名）：$INSTALLER_DEB"
 echo "兼容包（Debian 12/13、Ubuntu）：$INSTALLER_COMPAT"
 echo "装一份即可，不要两个一起装（同名包）。"
 echo "菜单：/usr/share/applications/textsend.desktop"
+echo "CLI：/usr/share/applications/textsend-cli.desktop"
 echo "日常：/opt/textsend/bin/TextSend"
-echo "调试：/opt/textsend/bin/TextSend-console（终端跑可看 Log）"
+echo "CLI：/opt/textsend/bin/TextSend-console（终端跑可看 Log）"
 echo "配置：程序目录能写就写旁边；否则主目录 .textsend.properties"

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TextSend CLI
+Comment=局域网文字互传（终端，可看日志）
+Exec=/opt/textsend/bin/TextSend-console
+Icon=/usr/share/pixmaps/textsend.png
+Terminal=true
+Categories=Utility;
+StartupWMClass=TextSend
+StartupNotify=false

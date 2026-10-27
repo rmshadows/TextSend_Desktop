@@ -65,6 +65,16 @@ jpackage \
   --java-options '--add-opens=java.desktop/sun.awt.X11=ALL-UNNAMED' \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
+if [[ -d "$DIST/TextSend.app" ]]; then
+  if [[ ! -x "$DIST/TextSend.app/Contents/MacOS/TextSend" || ! -x "$DIST/TextSend.app/Contents/MacOS/TextSend-console" ]]; then
+    echo "macOS 包缺少日常启动器或 CLI 启动器 TextSend-console" >&2
+    exit 1
+  fi
+elif [[ ! -x "$DIST/TextSend/bin/TextSend" || ! -x "$DIST/TextSend/bin/TextSend-console" ]]; then
+  echo "绿色包缺少日常启动器或 CLI 启动器 bin/TextSend-console" >&2
+  exit 1
+fi
+
 ARCHIVE="$DIST/TextSend-${VERSION}-${TAG}.tar.gz"
 rm -f "$ARCHIVE"
 if [[ -d "$DIST/TextSend.app" ]]; then

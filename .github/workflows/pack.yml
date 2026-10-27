@@ -105,7 +105,7 @@ jobs:
       - name: Install deb tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot dpkg-dev
+          sudo apt-get install -y dpkg-dev
           echo "LANG=${LANG:-}"
           . /etc/os-release
           echo "OS=$PRETTY_NAME"
@@ -131,6 +131,8 @@ jobs:
           for deb in "${debs[@]}"; do
             echo "==> $deb"
             dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend.desktop'
+            dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend-cli.desktop'
+            dpkg-deb -c "$deb" | grep 'opt/textsend/bin/TextSend-console'
             dpkg-deb -c "$deb" | grep 'usr/share/pixmaps/textsend.png'
           done
 
@@ -163,7 +165,7 @@ jobs:
       - name: Install deb tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot dpkg-dev
+          sudo apt-get install -y dpkg-dev
           echo "LANG=${LANG:-}"
           . /etc/os-release
           echo "OS=$PRETTY_NAME"
@@ -189,6 +191,8 @@ jobs:
           for deb in "${debs[@]}"; do
             echo "==> $deb"
             dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend.desktop'
+            dpkg-deb -c "$deb" | grep 'usr/share/applications/textsend-cli.desktop'
+            dpkg-deb -c "$deb" | grep 'opt/textsend/bin/TextSend-console'
             dpkg-deb -c "$deb" | grep 'usr/share/pixmaps/textsend.png'
           done
 

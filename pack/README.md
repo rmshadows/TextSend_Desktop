@@ -67,7 +67,7 @@ Linux / macOS 用 `.sh`；Windows 用同名 `.bat`。
 | `common.sh` / `common.bat` | 被其它脚本引入：读版本号、路径、检查命令 | 无 | — |
 | `pack-jar.sh` / `pack-jar.bat` | Maven shade，一个 fat JAR | `dist/Textsend_<版本>.jar` | 任意有 JDK+Maven 的系统 |
 | `pack-appimage.sh` / `pack-appimage.bat` | **不是** Linux `.AppImage`。是 `jpackage --type app-image` 绿色目录 | Linux/mac：目录 + `.tar.gz`；Windows：`dist\TextSend\` + `.zip` | 目标系统 |
-| `pack-deb.sh` | Debian 安装包 | `dist/*.deb` | **只能 Linux**（还要 `fakeroot`、`dpkg-deb`） |
+| `pack-deb.sh` | Debian 安装包 | `dist/*.deb` | **只能 Linux**（还要 `dpkg-deb`） |
 | `pack-mac.sh` | macOS 磁盘镜像 | `dist/*.dmg` | **只能 macOS** |
 | `pack-win.bat` | Windows 安装程序（**WiX 3**，`candle.exe` / `light.exe`） | `dist/*.exe` | **只能 Windows cmd** |
 | `pack-win-wix5.bat` | Windows 安装程序（**WiX 4/5**，`wix.exe`，JDK 24+） | `dist/*.exe` | **只能 Windows cmd** |
@@ -118,7 +118,7 @@ wix extension add -g WixToolset.UI.wixext
 
 - **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.60.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。见下「日常 / 调试启动器」。
-- **deb 安装包**：`TextSend-<版本>-linux-<架构>-installer.deb` 按打包机依赖；`…-installer-compat.deb` 是兼容包。装一份即可，不要两个一起装。一般装到 `/opt`，开始菜单入口是 `/usr/share/applications/textsend.desktop`。Fedora / Arch 请用绿色 `.tar.gz`
+- **deb 安装包**：`TextSend-<版本>-linux-<架构>-installer.deb` 按打包机依赖；`…-installer-compat.deb` 是兼容包。装一份即可，不要两个一起装。一般装到 `/opt`。开始菜单有两个入口：`textsend.desktop`（窗口）和 `textsend-cli.desktop`（终端）。Fedora / Arch 请用绿色 `.tar.gz`
 - **安装包**：Windows `TextSend-<版本>-windows-installer.exe`，macOS `TextSend-<版本>-macos-installer.dmg`。Mac 的 dmg 未签名，可能要右键打开
 
 ### 日常 / 调试启动器
@@ -173,4 +173,4 @@ wix extension add -g WixToolset.UI.wixext
 - 所有脚本：`java`（17+）、`mvn`
 - 绿色目录和安装包：`jpackage`（JDK 里自带，PATH 要能找到）
 - Windows `.exe`：要 WiX，见上「Windows `.exe`（WiX 3 或 4/5）」
-- `.deb`：`fakeroot`、`dpkg-deb`
+- `.deb`：`dpkg-deb`

@@ -45,6 +45,8 @@ jpackage \
   --input "$JPACKAGE_INPUT" \
   --main-jar TextSend.jar \
   --main-class "$MAIN_CLASS" \
+  --add-modules "$JP_MODULES" \
+  --add-launcher "TextSend-console=$PACK_DIR/win-console.properties" \
   --win-shortcut \
   --win-menu \
   "${ICON_JP[@]}" \
