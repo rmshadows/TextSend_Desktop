@@ -51,6 +51,13 @@ jpackage \
   --java-options "-Dfile.encoding=UTF-8" \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
-echo "OK  dist/ 下的 .exe"
-ls -1 "$DIST"/*.exe
+shopt -s nullglob
+exes=( "$DIST"/*.exe )
+if [[ ${#exes[@]} -ne 1 ]]; then
+  echo "期望 1 个安装包 .exe，实际 ${#exes[@]}" >&2
+  exit 1
+fi
+INSTALLER_EXE="$DIST/TextSend-${VERSION}-windows-installer.exe"
+mv -f "${exes[0]}" "$INSTALLER_EXE"
+echo "OK  $INSTALLER_EXE"
 echo "配置：程序目录能写就写旁边；否则用户主目录 .textsend.properties"

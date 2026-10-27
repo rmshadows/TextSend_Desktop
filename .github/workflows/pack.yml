@@ -87,7 +87,7 @@ jobs:
           echo "push_release=$PUSH_RELEASE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  # Ubuntu 24.04 x64。jpackage 原版 .deb Depends 按本机扫库（常含 libasound2t64，接近 Debian 13）；另打 *.compat.deb
+  # Ubuntu 24.04 x64。installer.deb 的 Depends 按本机扫库（常含 libasound2t64，接近 Debian 13）；另打 installer-compat.deb
   pack-linux-amd64:
     if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-amd64' }}
     runs-on: ubuntu-24.04
@@ -317,6 +317,11 @@ jobs:
               if [[ -e "$dest" ]]; then
                 if cmp -s "$f" "$dest"; then
                   echo "same file, skip: $base"
+                  continue
+                fi
+                # 每个平台各自 mvn 打 fat JAR，字节会因时间戳不同而不一致，Release 只留一份。
+                if [[ "$base" == Textsend_*.jar ]]; then
+                  echo "fat JAR already kept, skip: $base ($(basename "$dir"))"
                   continue
                 fi
                 echo "::error::asset name collision: $base" >&2

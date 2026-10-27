@@ -67,8 +67,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo OK exe in %DIST%:
-dir /b "%DIST%\*.exe"
+set "INSTALLER=%DIST%\TextSend-%VERSION%-windows-installer.exe"
+for %%F in ("%DIST%\*.exe") do (
+  if /I not "%%~fF"=="%INSTALLER%" move /Y "%%F" "%INSTALLER%" >nul
+)
+if not exist "%INSTALLER%" (
+  echo jpackage did not produce an installer exe
+  exit /b 1
+)
+echo OK %INSTALLER%
 exit /b 0
 
 :find_wix

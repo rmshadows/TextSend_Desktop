@@ -71,8 +71,15 @@ jpackage \
   --java-options "-Dfile.encoding=UTF-8" \
   --java-options '-Dtextsend.home=$ROOTDIR'
 
-echo "OK  dist/ 下的 .dmg"
-ls -1 "$DIST"/*.dmg
+shopt -s nullglob
+dmgs=( "$DIST"/*.dmg )
+if [[ ${#dmgs[@]} -ne 1 ]]; then
+  echo "期望 1 个 .dmg，实际 ${#dmgs[@]}" >&2
+  exit 1
+fi
+INSTALLER_DMG="$DIST/TextSend-${VERSION}-macos-installer.dmg"
+mv -f "${dmgs[0]}" "$INSTALLER_DMG"
+echo "OK  $INSTALLER_DMG"
 echo "日常：安装后的 TextSend.app"
 echo "调试：TextSend.app/Contents/MacOS/TextSend-console（终端跑可看 Log）"
 echo "未签名。本机打开若被拦，可右键打开或去系统设置放行。"

@@ -12,12 +12,12 @@
 
 | 平台 | runner | 产物（Artifact，保留 14 天） |
 |------|--------|------------------------------|
-| Linux amd64 | **Ubuntu 24.04** x64 | `.jar`、绿色 `.tar.gz`、`.deb` + `*.compat.deb` → `TextSend-linux-amd64` |
-| Linux arm64 | **Ubuntu 24.04** arm64（`ubuntu-24.04-arm`） | 同上 → `TextSend-linux-arm64` |
-| Windows | `windows-latest` | `.jar`、绿色 `.zip`、`.exe`（WiX 3）→ `TextSend-windows` |
-| macOS | `macos-latest` | `.jar`、绿色 `.tar.gz`、`.dmg`（未签名）→ `TextSend-macos` |
+| Linux amd64 | **Ubuntu 24.04** x64 | `.jar`、绿色 `.tar.gz`、`*-linux-amd64-installer.deb`、`*-linux-amd64-installer-compat.deb` → `TextSend-linux-amd64` |
+| Linux arm64 | **Ubuntu 24.04** arm64（`ubuntu-24.04-arm`） | 同上，架构为 `linux-arm64` → `TextSend-linux-arm64` |
+| Windows | `windows-latest` | `.jar`、绿色 `.zip`、`*-windows-installer.exe`（WiX 3）→ `TextSend-windows` |
+| macOS | `macos-latest` | `.jar`、绿色 `.tar.gz`、`*-macos-installer.dmg`（未签名）→ `TextSend-macos` |
 
-**Linux /「Debian 多少」**：runner 是 **Ubuntu 24.04**，不是 Debian 安装盘。原版 `.deb` 的 Depends 由 jpackage **按打包机扫库名**（24.04 上常带 `libasound2t64`，和 **Debian 13** 一类命名接近）。另打的 `*.compat.deb` 写死宽松 Depends（`libasound2 | libasound2t64`），给 Debian 12/13、Ubuntu 22.04/24.04。Fedora/Arch 请用绿色 `.tar.gz`。
+**Linux /「Debian 多少」**：runner 是 **Ubuntu 24.04**，不是 Debian 安装盘。原版 `.deb` 的 Depends 由 jpackage **按打包机扫库名**（24.04 上常带 `libasound2t64`，和 **Debian 13** 一类命名接近）。另打的 `*-installer-compat.deb` 写死宽松 Depends（`libasound2 | libasound2t64`），给 Debian 12/13、Ubuntu 22.04/24.04。Fedora/Arch 请用绿色 `.tar.gz`。
 
 **别人能不能下**：本仓库是 **公开** 的。任何人打开该次 Actions run 页面就能下 Artifact（一般要登录 GitHub），默认 **14 天过期**。
 
@@ -118,8 +118,8 @@ wix extension add -g WixToolset.UI.wixext
 
 - **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.60.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。见下「日常 / 调试启动器」。
-- **.deb**：打出两份，装一份即可（同名包，不要两个一起装）。一般装到 `/opt`，开始菜单入口是 `/usr/share/applications/textsend.desktop`。Fedora / Arch 请用绿色 `.tar.gz`
-- **.dmg / .exe**：本机安装器用。Mac 的 dmg 未签名，可能要右键打开
+- **deb 安装包**：`TextSend-<版本>-linux-<架构>-installer.deb` 按打包机依赖；`…-installer-compat.deb` 是兼容包。装一份即可，不要两个一起装。一般装到 `/opt`，开始菜单入口是 `/usr/share/applications/textsend.desktop`。Fedora / Arch 请用绿色 `.tar.gz`
+- **安装包**：Windows `TextSend-<版本>-windows-installer.exe`，macOS `TextSend-<版本>-macos-installer.dmg`。Mac 的 dmg 未签名，可能要右键打开
 
 ### 日常 / 调试启动器
 
@@ -139,8 +139,8 @@ wix extension add -g WixToolset.UI.wixext
 
 | 文件 | Depends | 给谁 |
 |------|---------|------|
-| `textsend_<版本>_<架构>.deb` | jpackage **按打包机扫库名**（Debian 13 上会带 `libasound2t64`） | 和打包机同一代的 Debian / Ubuntu |
-| `textsend_<版本>_<架构>.compat.deb` | 写死 `libasound2 \| libasound2t64` 等宽松依赖（从原版解包改 Depends，不再二次 jpackage） | Debian 12 / 13、Ubuntu 22.04 / 24.04 |
+| `TextSend_<版本>-linux-<架构>-installer.deb` | jpackage **按打包机扫库名**（Debian 13 上会带 `libasound2t64`） | 和打包机同一代的 Debian / Ubuntu |
+| `TextSend_<版本>-linux-<架构>-installer-compat.deb` | 写死 `libasound2 \| libasound2t64` 等宽松依赖（从原版解包改 Depends，不再二次 jpackage） | Debian 12 / 13、Ubuntu 22.04 / 24.04 |
 
 内容一样，只是 control 不同。宽松模板在 `pack/jpackage-resources/control`，只在打 compat 时拷进临时 resource-dir。
 

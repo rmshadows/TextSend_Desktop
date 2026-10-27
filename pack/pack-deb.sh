@@ -2,8 +2,8 @@
 # 3/3  Linux .deb（jpackage，自带 JRE）
 # 用法：./pack/pack-deb.sh
 # 产物：
-#   dist/textsend_<ver>_<arch>.deb         — 原版：Depends 按本机扫库名
-#   dist/textsend_<ver>_<arch>.compat.deb  — 宽松：libasound2 | libasound2t64（Debian 12/13、Ubuntu）
+#   dist/TextSend-<ver>-linux-<arch>-installer.deb         — 原版：Depends 按本机扫库名
+#   dist/TextSend-<ver>-linux-<arch>-installer-compat.deb  — 宽松：libasound2 | libasound2t64（Debian 12/13、Ubuntu）
 #
 # compat 不二次 jpackage（JDK 17 + Actions 上易 dpkg-deb exit 2）：从原版解包改 Depends 再打。
 # 菜单项：jpackage 只把 .desktop 放在 /opt/.../lib/ 并靠 postinst 的 xdg-desktop-menu，
@@ -125,7 +125,7 @@ mkdir -p "$JPACKAGE_INPUT"
 cp -f "$FAT_JAR" "$JPACKAGE_INPUT/TextSend.jar"
 
 echo "==> jpackage deb"
-rm -f "$DIST"/textsend_*.deb "$DIST"/TextSend-*.deb
+rm -f "$DIST"/textsend_*.deb "$DIST"/TextSend-*-installer.deb "$DIST"/TextSend-*-installer-compat.deb
 
 ICON_JP=()
 if [[ -f "$ICON_PNG" ]]; then
@@ -228,11 +228,16 @@ fi
 rm -rf "$TMP_ROOT"
 assert_deb_has_menu "$COMPAT_OUT"
 
-# 原版保持 jpackage 文件名；compat 为 *.compat.deb
+ARCH="${BASE##*_}"
+INSTALLER_DEB="$DIST/TextSend-${VERSION}-linux-${ARCH}-installer.deb"
+INSTALLER_COMPAT="$DIST/TextSend-${VERSION}-linux-${ARCH}-installer-compat.deb"
+mv -f "$ORIG_DEB" "$INSTALLER_DEB"
+mv -f "$COMPAT_OUT" "$INSTALLER_COMPAT"
+
 echo "OK  dist/ 下的 .deb"
 ls -1 "$DIST"/*.deb
-echo "原版（本机扫库名）：$ORIG_DEB"
-echo "宽松（Debian 12/13、Ubuntu）：$COMPAT_OUT"
+echo "安装包（本机扫库名）：$INSTALLER_DEB"
+echo "兼容包（Debian 12/13、Ubuntu）：$INSTALLER_COMPAT"
 echo "装一份即可，不要两个一起装（同名包）。"
 echo "菜单：/usr/share/applications/textsend.desktop"
 echo "日常：/opt/textsend/bin/TextSend"
