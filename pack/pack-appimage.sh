@@ -20,7 +20,12 @@ cp -f "$FAT_JAR" "$JPACKAGE_INPUT/TextSend.jar"
 
 OS="$(uname -s)"
 case "$OS" in
-  Linux*)             TAG="linux-x64" ;;
+  Linux*)
+    case "$(uname -m)" in
+      aarch64|arm64) TAG="linux-arm64" ;;
+      *)             TAG="linux-x64" ;;
+    esac
+    ;;
   Darwin*)            TAG="mac" ;;
   MINGW*|MSYS*|CYGWIN*) TAG="win-x64" ;;
   *)                  TAG="unknown" ;;

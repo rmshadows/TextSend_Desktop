@@ -19,9 +19,9 @@
 
 **Linux /「Debian 多少」**：runner 是 **Ubuntu 24.04**，不是 Debian 安装盘。原版 `.deb` 的 Depends 由 jpackage **按打包机扫库名**（24.04 上常带 `libasound2t64`，和 **Debian 13** 一类命名接近）。另打的 `*.compat.deb` 写死宽松 Depends（`libasound2 | libasound2t64`），给 Debian 12/13、Ubuntu 22.04/24.04。Fedora/Arch 请用绿色 `.tar.gz`。
 
-**别人能不能下**：本仓库是 **公开** 的。任何人打开该次 Actions run 页面就能下 Artifact（一般要登录 GitHub）。**不是** Release 附件，默认 **14 天过期**，也不会出现在 Releases 页。要长期公开下载需另建 GitHub Release 并挂文件。
+**别人能不能下**：本仓库是 **公开** 的。任何人打开该次 Actions run 页面就能下 Artifact（一般要登录 GitHub），默认 **14 天过期**。
 
-跑完后在该次 run 的 **Artifacts** 里下载。不自动建 GitHub Release。
+仓库根目录 `release.env` 的 `RELEASE_ENABLE` 决定要不要发到 GitHub Release：`0` 不发，`1` 发。只有这次选的平台是 `all`、四个平台都成功，才会建或更新 tag `v<版本>`（版本来自 `TextSendMain.VERSION`）并标成 latest。同名文件会覆盖。改 `release.env` 后要先推送，Run workflow 读的是所选分支上的那份文件。
 
 ## 一键
 

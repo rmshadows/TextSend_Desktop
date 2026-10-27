@@ -1,5 +1,7 @@
 # 手动打安装包 / 绿色包（走仓库里的 pack/ 脚本，不自动跑）
 # Actions → Pack → Run workflow
+# 是否发布 GitHub Release 由仓库根目录 release.env 的 RELEASE_ENABLE 决定（0 关 / 1 开）。
+# 只有 platform=all 且四个平台都成功时才发布。
 name: Pack
 
 on:
@@ -25,6 +27,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_enable: ${{ steps.out.outputs.release_enable }}
+      version: ${{ steps.out.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read release.env
+        id: out
+        run: |
+          set -euo pipefail
+          [[ -f release.env ]] || { echo "::error::release.env not found"; exit 1; }
+          tmp="$(mktemp)"
+          grep -Ev '^\s*#|^\s*$' release.env > "$tmp" || true
+          if grep -nPv '^[A-Za-z_][A-Za-z0-9_]*=.*$' "$tmp" >/dev/null; then
+            echo "::error::release.env has invalid line(s):"
+            grep -nPv '^[A-Za-z_][A-Za-z0-9_]*=.*$' "$tmp" || true
+            exit 1
+          fi
+          RELEASE_ENABLE=""
+          while IFS= read -r line; do
+            key="${line%%=*}"
+            val="${line#*=}"
+            case "$key" in
+              RELEASE_ENABLE) RELEASE_ENABLE="$val" ;;
+              *) echo "::error::unknown key in release.env: $key"; exit 1 ;;
+            esac
+          done < "$tmp"
+          : "${RELEASE_ENABLE:?missing RELEASE_ENABLE}"
+          if [[ "$RELEASE_ENABLE" =~ ^[01]$ ]]; then
+            if [[ "$RELEASE_ENABLE" == "1" ]]; then RELEASE_ENABLE=true; else RELEASE_ENABLE=false; fi
+          fi
+          case "$RELEASE_ENABLE" in
+            true|false) ;;
+            *) echo "::error::Invalid RELEASE_ENABLE: $RELEASE_ENABLE (expected 0/1 or false/true)"; exit 1 ;;
+          esac
+          version_file="src/cn.rmshadows.TextSend/application/TextSendMain.java"
+          VERSION="$(sed -n 's/.*String VERSION = "\([^"]*\)".*/\1/p' "$version_file" | head -1)"
+          [[ -n "$VERSION" ]] || { echo "::error::read VERSION failed"; exit 1; }
+          echo "RELEASE_ENABLE=$RELEASE_ENABLE"
+          echo "VERSION=$VERSION"
+          echo "release_enable=$RELEASE_ENABLE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   # Ubuntu 24.04 x64。jpackage 原版 .deb Depends 按本机扫库（常含 libasound2t64，接近 Debian 13）；另打 *.compat.deb
   pack-linux-amd64:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-amd64' }}
@@ -213,3 +261,64 @@ jobs:
             dist/*.dmg
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    needs: [prepare, pack-linux-amd64, pack-linux-arm64, pack-windows, pack-macos]
+    if: >-
+      needs.prepare.outputs.release_enable == 'true' &&
+      github.event.inputs.platform == 'all' &&
+      needs.pack-linux-amd64.result == 'success' &&
+      needs.pack-linux-arm64.result == 'success' &&
+      needs.pack-windows.result == 'success' &&
+      needs.pack-macos.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: TextSend-*
+          path: release-assets
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          shopt -s nullglob
+          for dir in release-assets/*; do
+            [[ -d "$dir" ]] || continue
+            for f in "$dir"/*; do
+              [[ -f "$f" ]] || continue
+              base="$(basename "$f")"
+              dest="upload/$base"
+              if [[ -e "$dest" ]]; then
+                if cmp -s "$f" "$dest"; then
+                  echo "same file, skip: $base"
+                  continue
+                fi
+                echo "::error::asset name collision: $base" >&2
+                exit 1
+              fi
+              cp -a "$f" "$dest"
+            done
+          done
+          files=(upload/*)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::no release assets" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          title="TextSend ${VERSION}"
+          notes="$(mktemp)"
+          printf 'TextSend %s\n\nGitHub Actions 打包（%s）。\n' "$VERSION" "$GITHUB_SHA" > "$notes"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+            gh release edit "$TAG" --latest --title "$title" --notes-file "$notes"
+          else
+            gh release create "$TAG" "${files[@]}" --latest --title "$title" --notes-file "$notes"
+          fi
+          gh release view "$TAG" --json url,tagName -q '.url'
