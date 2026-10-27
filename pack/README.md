@@ -4,9 +4,9 @@
 
 产物都在 `dist/`。
 
-## GitHub Actions（手动）
+## GitHub Actions
 
-仓库 **Actions → Pack → Run workflow**。只响应 `workflow_dispatch`，push / PR **不会**自动打。
+推送到 `dev` 或 `master` 会自动打四个平台。也可以 **Actions → Pack → Run workflow** 手动选平台。PR 不会触发。
 
 可选平台：`all` / `linux`（amd64+arm64）/ `linux-amd64` / `linux-arm64` / `windows` / `macos`。各跑本机 `pack.sh` 或 `pack.bat`，**不能交叉编译**。
 
@@ -21,7 +21,9 @@
 
 **别人能不能下**：本仓库是 **公开** 的。任何人打开该次 Actions run 页面就能下 Artifact（一般要登录 GitHub），默认 **14 天过期**。
 
-仓库根目录 `release.env` 的 `RELEASE_ENABLE` 决定要不要发到 GitHub Release：`0` 不发，`1` 发。只有这次选的平台是 `all`、四个平台都成功，才会建或更新 tag `v<版本>`（版本来自 `TextSendMain.VERSION`）并标成 latest。同名文件会覆盖。改 `release.env` 后要先推送，Run workflow 读的是所选分支上的那份文件。
+仓库根目录 `release.env` 分两个开关，都是 `0` 不发、`1` 发。`PUSH_RELEASE` 控制推送到 `dev` / `master` 打完发不发 Release（`0` 时 push 仍会打包，产物只留 Artifact）。`RELEASE_ENABLE` 控制手动 Run workflow 且平台选 `all` 时发不发。说明里写分支和提交（本仓库是 `dev` / `master`，没有 `main`）。
+
+会发两个 tag。版本来自 `TextSendMain.VERSION`。`master` 的稳定版是 `v<版本>`，同版本覆盖并标成 latest。`dev` 的稳定版是 `v<版本>-dev`，同版本覆盖，不标 latest。滚动版仍是 `rolling-<UTC时间戳>-<分支>`，每次新建，不标 latest。
 
 ## 一键
 

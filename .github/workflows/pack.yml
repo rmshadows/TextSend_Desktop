@@ -1,10 +1,14 @@
-# 手动打安装包 / 绿色包（走仓库里的 pack/ 脚本，不自动跑）
-# Actions → Pack → Run workflow
-# 是否发布 GitHub Release 由仓库根目录 release.env 的 RELEASE_ENABLE 决定（0 关 / 1 开）。
-# 只有 platform=all 且四个平台都成功时才发布。
+# 推送到 dev / master 时自动打包。也可 Actions → Pack → Run workflow 手动打指定平台。
+# release.env：PUSH_RELEASE 控制 push 发不发 Release；RELEASE_ENABLE 控制手动且 platform=all 发不发。
+# master 稳定版 tag 为 v<版本>，同版本覆盖并标 latest。dev 稳定版 tag 为 v<版本>-dev，同版本覆盖，不标 latest。
+# 滚动版仍是 rolling-<时间戳>-<分支>，不标 latest。
 name: Pack
 
 on:
+  push:
+    branches:
+      - dev
+      - master
   workflow_dispatch:
     inputs:
       platform:
@@ -31,6 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       release_enable: ${{ steps.out.outputs.release_enable }}
+      push_release: ${{ steps.out.outputs.push_release }}
       version: ${{ steps.out.outputs.version }}
     steps:
       - name: Checkout
@@ -49,33 +54,42 @@ jobs:
             exit 1
           fi
           RELEASE_ENABLE=""
+          PUSH_RELEASE=""
           while IFS= read -r line; do
             key="${line%%=*}"
             val="${line#*=}"
             case "$key" in
               RELEASE_ENABLE) RELEASE_ENABLE="$val" ;;
+              PUSH_RELEASE) PUSH_RELEASE="$val" ;;
               *) echo "::error::unknown key in release.env: $key"; exit 1 ;;
             esac
           done < "$tmp"
-          : "${RELEASE_ENABLE:?missing RELEASE_ENABLE}"
-          if [[ "$RELEASE_ENABLE" =~ ^[01]$ ]]; then
-            if [[ "$RELEASE_ENABLE" == "1" ]]; then RELEASE_ENABLE=true; else RELEASE_ENABLE=false; fi
-          fi
-          case "$RELEASE_ENABLE" in
-            true|false) ;;
-            *) echo "::error::Invalid RELEASE_ENABLE: $RELEASE_ENABLE (expected 0/1 or false/true)"; exit 1 ;;
-          esac
+          normalize_bool() {
+            local name="$1"
+            local value="$2"
+            if [[ "$value" =~ ^[01]$ ]]; then
+              if [[ "$value" == "1" ]]; then value=true; else value=false; fi
+            fi
+            case "$value" in
+              true|false) printf '%s' "$value" ;;
+              *) echo "::error::Invalid ${name}: ${value:-<empty>} (expected 0/1 or false/true)" >&2; exit 1 ;;
+            esac
+          }
+          RELEASE_ENABLE="$(normalize_bool RELEASE_ENABLE "$RELEASE_ENABLE")"
+          PUSH_RELEASE="$(normalize_bool PUSH_RELEASE "$PUSH_RELEASE")"
           version_file="src/cn.rmshadows.TextSend/application/TextSendMain.java"
           VERSION="$(sed -n 's/.*String VERSION = "\([^"]*\)".*/\1/p' "$version_file" | head -1)"
           [[ -n "$VERSION" ]] || { echo "::error::read VERSION failed"; exit 1; }
           echo "RELEASE_ENABLE=$RELEASE_ENABLE"
+          echo "PUSH_RELEASE=$PUSH_RELEASE"
           echo "VERSION=$VERSION"
           echo "release_enable=$RELEASE_ENABLE" >> "$GITHUB_OUTPUT"
+          echo "push_release=$PUSH_RELEASE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   # Ubuntu 24.04 x64。jpackage 原版 .deb Depends 按本机扫库（常含 libasound2t64，接近 Debian 13）；另打 *.compat.deb
   pack-linux-amd64:
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-amd64' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-amd64' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -133,7 +147,7 @@ jobs:
 
   # Ubuntu 24.04 arm64（公开仓库免费 runner）。私有仓此标签不可用。
   pack-linux-arm64:
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-arm64' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'linux-arm64' }}
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
@@ -190,7 +204,7 @@ jobs:
           retention-days: 14
 
   pack-windows:
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -233,7 +247,7 @@ jobs:
           retention-days: 14
 
   pack-macos:
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' }}
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -265,8 +279,10 @@ jobs:
   release:
     needs: [prepare, pack-linux-amd64, pack-linux-arm64, pack-windows, pack-macos]
     if: >-
-      needs.prepare.outputs.release_enable == 'true' &&
-      github.event.inputs.platform == 'all' &&
+      (
+        (github.event_name == 'push' && needs.prepare.outputs.push_release == 'true') ||
+        (github.event_name == 'workflow_dispatch' && needs.prepare.outputs.release_enable == 'true' && github.event.inputs.platform == 'all')
+      ) &&
       needs.pack-linux-amd64.result == 'success' &&
       needs.pack-linux-arm64.result == 'success' &&
       needs.pack-windows.result == 'success' &&
@@ -275,6 +291,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download packs
         uses: actions/download-artifact@v4
         with:
@@ -311,14 +330,51 @@ jobs:
             echo "::error::no release assets" >&2
             exit 1
           fi
-          TAG="v${VERSION}"
-          title="TextSend ${VERSION}"
-          notes="$(mktemp)"
-          printf 'TextSend %s\n\nGitHub Actions 打包（%s）。\n' "$VERSION" "$GITHUB_SHA" > "$notes"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${files[@]}" --clobber
-            gh release edit "$TAG" --latest --title "$title" --notes-file "$notes"
+
+          BRANCH="${GITHUB_REF_NAME}"
+          BRANCH_TAG="$(printf '%s' "$BRANCH" | tr '/' '-')"
+          WHEN="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          STAMP="$(date -u '+%Y%m%d-%H%M%S')"
+          if [[ "$BRANCH" == "master" ]]; then
+            STABLE="v${VERSION}"
+            STABLE_TITLE="TextSend ${VERSION}"
+            LATEST_FLAG=(--latest)
           else
-            gh release create "$TAG" "${files[@]}" --latest --title "$title" --notes-file "$notes"
+            STABLE="v${VERSION}-${BRANCH_TAG}"
+            STABLE_TITLE="TextSend ${VERSION}-${BRANCH_TAG}"
+            LATEST_FLAG=(--latest=false)
           fi
-          gh release view "$TAG" --json url,tagName -q '.url'
+          ROLLING="rolling-${STAMP}-${BRANCH_TAG}"
+          notes="$(mktemp)"
+
+          printf 'TextSend %s\n\n分支：%s\n提交：%s\n时间：%s\n' \
+            "$VERSION" "$BRANCH" "$GITHUB_SHA" "$WHEN" > "$notes"
+          if gh release view "$STABLE" >/dev/null 2>&1; then
+            echo "覆盖 ${STABLE}"
+            gh release upload "$STABLE" "${files[@]}" --clobber
+            gh release edit "$STABLE" "${LATEST_FLAG[@]}" --title "$STABLE_TITLE" --notes-file "$notes"
+            git tag -f "$STABLE" "$GITHUB_SHA"
+            git push origin "refs/tags/${STABLE}" --force
+          else
+            echo "创建 ${STABLE}"
+            gh release create "$STABLE" "${files[@]}" \
+              "${LATEST_FLAG[@]}" \
+              --title "$STABLE_TITLE" \
+              --notes-file "$notes" \
+              --target "$GITHUB_SHA"
+          fi
+
+          printf 'TextSend rolling\n\n对应版本：%s\n分支：%s\n提交：%s\n时间：%s\n' \
+            "$VERSION" "$BRANCH" "$GITHUB_SHA" "$WHEN" > "$notes"
+          echo "创建滚动版 ${ROLLING}（不标 latest）"
+          gh release create "$ROLLING" "${files[@]}" \
+            --latest=false \
+            --title "TextSend rolling ${WHEN} (${BRANCH})" \
+            --notes-file "$notes" \
+            --target "$GITHUB_SHA"
+          if [[ "$BRANCH" == "master" ]]; then
+            gh release edit "$STABLE" --latest
+          fi
+
+          gh release view "$STABLE" --json url,tagName -q '.url'
+          gh release view "$ROLLING" --json url,tagName -q '.url'
