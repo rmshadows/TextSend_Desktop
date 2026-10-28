@@ -1,7 +1,14 @@
  # TextSend_Desktop
 
  - Current Version: 5.0.61
- - 安卓端传送门：[Gitee](https://gitee.com/rmshadows/TextSend_Android) [Github](https://github.com/rmshadows/TextSend_Android)
+
+ ### 传送门
+
+ - **Desktop**：[GitHub](https://github.com/rmshadows/TextSend_Desktop) · [Gitee](https://gitee.com/rmshadows/TextSend_Desktop)
+ - **Android**：[GitHub](https://github.com/rmshadows/TextSend_Android) · [Gitee](https://gitee.com/rmshadows/TextSend_Android)
+ - **uTools**：[GitHub](https://github.com/rmshadows/TextSend_Utool)
+ - **iOS / 网页桥（Web）**：[GitHub](https://github.com/rmshadows/Textsend_ios)（计划中；手机用浏览器扫电脑网页桥，非原生 App）
+
  - 帮助你在安卓和电脑之间互传文字，告别传段文字还要打开QQ的生活。
  - 版本/测试平台：Java 17 Swing Linux （Windows 可用打包脚本打 exe，本机未作为主测试平台。macOS 需在对应系统打包）
  - 其实这个应用主要用法是：安卓语音输入 + TextSend = 电脑语音输入。
