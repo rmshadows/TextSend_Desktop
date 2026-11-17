@@ -79,7 +79,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.61";
+    public static final String VERSION = "5.0.62";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -208,6 +208,7 @@ public class TextSendMain {
     private static JToggleButton toggleMini;
     private static JButton buttonStart;
     private static JButton buttonRole;
+    private static JButton buttonClients;
     private static JButton buttonSend;
     private static JButton buttonFile;
     private static JButton buttonQr;
@@ -242,6 +243,37 @@ public class TextSendMain {
     private static JCheckBox checkCustomPin;
     private static JTextField fieldCustomPin;
     private static JCheckBox checkRememberClient;
+    private static JButton buttonSettings;
+    private static JPanel lanPeerBox;
+    private static JPanel connectedBox;
+    private static JPanel authPendingBox;
+    private static JButton connectedEntryBtn;
+    private static JButton authPendingEntryBtn;
+    private static JPopupMenu connectedPopup;
+    private static JPopupMenu authPendingPopup;
+    private static JPopupMenu sessionPopup;
+    private static String lanPeerSig = "";
+    private static String connectedSig = "";
+    private static String authPendingSig = "";
+    private static Timer lanPeerTimer;
+    /** 待授权：同 IP 只保留最新一条，不弹窗。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, PendingAuth> authPendingByHost =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedDeque<Long>> authHitsByHost =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> authCooldownUntil =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int AUTH_PENDING_MAX = 16;
+
+    private static final class PendingAuth {
+        final LanAuth.Request req;
+        final long at;
+
+        PendingAuth(LanAuth.Request req, long at) {
+            this.req = req;
+            this.at = at;
+        }
+    }
     /** 仅程序首次启动时尝试自动开服，切换角色/小窗重建不再触发 */
     private static boolean autoStartPending = true;
     private static final DefaultTableModel fileModel = new DefaultTableModel(
@@ -294,6 +326,7 @@ public class TextSendMain {
     public static void main(String[] args) throws SocketException {
         LinuxWmClass.initIfNeeded();
         UserConfig.load();
+        LanDiscover.boot();
         serverListenPort = String.valueOf(UserConfig.getListenPort());
         miniMode = UserConfig.isPreferMini();
         String heuristicIp = getIP();
@@ -367,11 +400,25 @@ public class TextSendMain {
 
         buttonStart = new JButton(server ? "启动" : "连接");
         buttonRole = new JButton(server ? "客户端" : "服务端");
+        buttonClients = new JButton("在线 0");
+        buttonClients.setToolTipText("待授权与已连接。点开可接受、拒绝、拉黑、踢下线");
+        buttonClients.addActionListener(e -> showSessionPopup());
         buttonSend = new JButton("发送");
         buttonFile = new JButton("文件");
         buttonQr = new JButton("二维码");
         buttonHelp = new JButton("帮助");
+        buttonHelp.setToolTipText("查看操作说明与快捷键");
         buttonHelp.addActionListener(e -> showHelp());
+        buttonSettings = new JButton("设置");
+        buttonSettings.setToolTipText("局域网探测、授权限流/冷却/黑名单等");
+        buttonSettings.addActionListener(e -> showSettings());
+        buttonRole.setToolTipText("在服务端 / 客户端之间切换（已连接时不可用）");
+        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件");
+        buttonFile.setToolTipText("选择文件加入待发列表");
+        buttonQr.setToolTipText("显示连接二维码（服务端）；手动打开后连上也不自动关");
+        toggleMini.setToolTipText("置顶小窗 / 恢复大窗");
+        ToolTipManager.sharedInstance().setInitialDelay(350);
+        ToolTipManager.sharedInstance().setDismissDelay(12_000);
 
         labelStatus = new JLabel(" ");
         labelStatus.setForeground(MUTED);
@@ -746,7 +793,7 @@ public class TextSendMain {
                 if (!buttonStart.isEnabled() || !buttonStart.contains(e.getPoint())) {
                     return;
                 }
-                maxConnection = b == MouseEvent.BUTTON2 ? 7 : 1;
+                maxConnection = b == MouseEvent.BUTTON2 ? UserConfig.getMaxClients() : 1;
                 if (isServerRunning()) {
                     stopServer();
                 } else {
@@ -757,6 +804,54 @@ public class TextSendMain {
                 }
             }
         });
+        applyActionTooltips();
+    }
+
+    /** 多按键/多手势按钮的悬停说明。 */
+    private static void applyActionTooltips() {
+        if (buttonStart != null) {
+            if (isServerMode) {
+                if (isServerRunning()) {
+                    buttonStart.setToolTipText("停止服务（已连接客户端会断开）");
+                } else {
+                    buttonStart.setToolTipText("<html>左键：启动（最多 1 人）并打开二维码<br>"
+                            + "中键：最多 " + UserConfig.getMaxClients() + " 人（设置里可改）<br>"
+                            + "右键：启动但不弹二维码<br>"
+                            + "长按左键：改端口</html>");
+                }
+            } else {
+                boolean busy = isClientConnected || clientHandshaking;
+                buttonStart.setToolTipText(busy ? "断开连接" : "连接（粘贴 ts://… 后点，或点探测到的设备请求授权）");
+            }
+        }
+        if (buttonBrowse != null) {
+            buttonBrowse.setToolTipText("<html>左键：选文件<br>Shift+左键：打勾选多个文件夹<br>右键：系统文件选择框</html>");
+        }
+        if (buttonSend != null && !miniMode) {
+            buttonSend.setToolTipText("发送文字；列表有选中则发文件（Ctrl+Enter 同效）");
+        }
+        if (buttonQr != null) {
+            buttonQr.setToolTipText(isServerMode
+                    ? (UserConfig.isQrCloseOnFocusLost()
+                    ? "显示二维码；失焦或 Esc 关闭；手动打开后连上也不因连上而关"
+                    : "显示二维码；Esc 关闭；手动打开后连上也不自动关")
+                    : "客户端模式无二维码");
+        }
+        if (buttonRole != null) {
+            buttonRole.setToolTipText("切换服务端 / 客户端（传输中不可用）");
+        }
+        if (buttonSettings != null) {
+            buttonSettings.setToolTipText("局域网探测、授权限流/冷却/黑名单等");
+        }
+        if (buttonHelp != null) {
+            buttonHelp.setToolTipText("操作说明与快捷键");
+        }
+        if (toggleMini != null) {
+            toggleMini.setToolTipText(miniMode ? "恢复大窗" : "置顶小窗");
+        }
+        if (buttonFile != null) {
+            buttonFile.setToolTipText("选择文件加入待发");
+        }
     }
 
     private static void setMiniMode(boolean mini) {
@@ -961,12 +1056,14 @@ public class TextSendMain {
             actions.setOpaque(false);
             toggleMini.setText("置顶小窗");
             fixToolbarButton(buttonHelp, 64);
+            fixToolbarButton(buttonSettings, 64);
             fixToolbarButton(toggleMini, 96);
             fixToolbarButton(buttonRole, 80);
             fixToolbarButton(buttonStart, 72);
             fixToolbarButton(buttonQr, 72);
             fixToolbarButton(buttonSend, 72);
             actions.add(buttonHelp);
+            actions.add(buttonSettings);
             actions.add(toggleMini);
             actions.add(buttonRole);
             actions.add(buttonStart);
@@ -1009,9 +1106,12 @@ public class TextSendMain {
                 comboIps.setMinimumSize(new Dimension(UserConfig.s(280), UserConfig.s(28)));
                 body.add(net);
 
-                JPanel pinRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+                JPanel pinRow = new JPanel(new BorderLayout(UserConfig.s(8), 0));
                 pinRow.setOpaque(false);
                 pinRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+                pinRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(34)));
+                JPanel pinLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+                pinLeft.setOpaque(false);
                 checkCustomPin = new JCheckBox("固定 PIN");
                 checkCustomPin.setOpaque(false);
                 checkCustomPin.setToolTipText("开启后每次启动服务端使用同一 8 位 PIN（默认关，随机生成）");
@@ -1060,9 +1160,30 @@ public class TextSendMain {
                         persistCustomPin();
                     }
                 });
-                pinRow.add(checkCustomPin);
-                pinRow.add(fieldCustomPin);
+                pinLeft.add(checkCustomPin);
+                pinLeft.add(fieldCustomPin);
+                pinRow.add(pinLeft, BorderLayout.CENTER);
+                fixToolbarButton(buttonClients, 148);
+                updateClientsButton();
+                pinRow.add(buttonClients, BorderLayout.EAST);
                 body.add(pinRow);
+                lanPeerBox = null;
+                authPendingBox = new JPanel();
+                authPendingSig = "";
+                authPendingEntryBtn = null;
+                authPendingBox.setOpaque(false);
+                authPendingBox.setLayout(new BoxLayout(authPendingBox, BoxLayout.Y_AXIS));
+                authPendingBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+                authPendingBox.setVisible(false);
+                body.add(authPendingBox);
+                connectedBox = new JPanel();
+                connectedSig = "";
+                connectedEntryBtn = null;
+                connectedBox.setOpaque(false);
+                connectedBox.setLayout(new BoxLayout(connectedBox, BoxLayout.Y_AXIS));
+                connectedBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+                connectedBox.setVisible(false);
+                body.add(connectedBox);
                 body.add(Box.createVerticalStrut(UserConfig.s(8)));
 
                 JPanel cards = new JPanel(new GridBagLayout());
@@ -1084,8 +1205,11 @@ public class TextSendMain {
                 cards.add(cardKey, gc);
                 body.add(cards);
                 body.add(Box.createVerticalStrut(UserConfig.s(8)));
+                ensureLanPeerTimer();
+                refreshAuthPending();
+                refreshConnectedClients();
             } else {
-                JLabel tip = new JLabel("<html>粘贴 <b>ts://IP/k...</b> 后点连接。端口可省略，默认 54300。</html>");
+                JLabel tip = new JLabel("<html>粘贴 <b>ts://IP/k...</b> 后点连接。开了局域网探测时，点设备会请求服务端授权（免输 PIN）。</html>");
                 tip.setForeground(MUTED);
                 tip.setFont(tip.getFont().deriveFont((float) UserConfig.s(12)));
                 tip.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -1107,7 +1231,20 @@ public class TextSendMain {
                 });
                 clientOpts.add(checkRememberClient);
                 body.add(clientOpts);
+                connectedBox = null;
+                authPendingBox = null;
+                hideAuthPendingPopup();
+                clearAuthPending(false);
+                lanPeerBox = new JPanel();
+                lanPeerSig = "";
+                lanPeerBox.setOpaque(false);
+                lanPeerBox.setLayout(new BoxLayout(lanPeerBox, BoxLayout.Y_AXIS));
+                lanPeerBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+                lanPeerBox.setVisible(UserConfig.isLanDiscover());
+                body.add(lanPeerBox);
                 body.add(Box.createVerticalStrut(UserConfig.s(6)));
+                ensureLanPeerTimer();
+                refreshLanPeers();
                 prefillClientConnection();
             }
 
@@ -1464,7 +1601,7 @@ public class TextSendMain {
             // 原版：服务运行中右侧按钮就是连接数 (N)，点一下仍发送
             if (isServerMode && isServerRunning()) {
                 buttonSend.setText("(" + connectedClients + ")");
-                buttonSend.setToolTipText("已连接客户端数；点击发送");
+                buttonSend.setToolTipText("已连接客户端数；点击仍可发送");
             } else if (active) {
                 buttonSend.setText("发送");
                 buttonSend.setToolTipText("发送文字");
@@ -1472,7 +1609,6 @@ public class TextSendMain {
                 buttonSend.setText("切换");
                 buttonSend.setToolTipText("切换 服务端/客户端");
             }
-            buttonStart.setToolTipText(isServerMode ? "启动/停止服务" : "连接/断开");
             if (!transferUi) {
                 if (isServerMode) {
                     frame.setTitle("Server");
@@ -1483,10 +1619,9 @@ public class TextSendMain {
             refreshMiniShared();
         } else {
             buttonSend.setText("发送");
-            buttonSend.setToolTipText(null);
-            buttonStart.setToolTipText(null);
             wireIpComboTooltips();
         }
+        applyActionTooltips();
         if (buttonBrowse != null) {
             buttonBrowse.setEnabled(true);
         }
@@ -1582,6 +1717,8 @@ public class TextSendMain {
         connectedClients = 0;
         inputShowingCount = false;
         miniShowingPin = false;
+        hideAuthPendingPopup();
+        clearAuthPending(true);
         closeQrDialog();
         fileBusy = false;
         resetSendQueue();
@@ -1590,6 +1727,8 @@ public class TextSendMain {
         TsServer.stopCurrent();
         setTextResetUndo(areaMessage, "");
         setTextResetUndo(miniTextArea, "");
+        refreshAuthPending();
+        refreshConnectedClients();
         refreshRunningChrome();
     }
 
@@ -1937,6 +2076,760 @@ public class TextSendMain {
         return String.format(java.util.Locale.ROOT, "%.1f MB/s", bps / (1024.0 * 1024.0));
     }
 
+    private static void showSettings() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(new EmptyBorder(UserConfig.s(10), UserConfig.s(12), UserConfig.s(10), UserConfig.s(12)));
+
+        JCheckBox discover = new JCheckBox("局域网探测");
+        discover.setAlignmentX(Component.LEFT_ALIGNMENT);
+        discover.setSelected(UserConfig.isLanDiscover());
+        discover.setToolTipText("默认关。打开后可被发现，并允许客户端请求临时授权接入（须本机点允许）。");
+
+        JCheckBox announce = new JCheckBox("主动广播在线");
+        announce.setAlignmentX(Component.LEFT_ALIGNMENT);
+        announce.setSelected(UserConfig.isLanDiscoverAnnounce());
+        announce.setEnabled(UserConfig.isLanDiscover());
+        announce.setToolTipText("默认开，大约每 2 秒广播一次。关掉后服务端不主动喊，只在客户端发探测时回复。");
+
+        JCheckBox pause = new JCheckBox("有连接时关闭探测");
+        pause.setAlignmentX(Component.LEFT_ALIGNMENT);
+        pause.setSelected(UserConfig.isLanDiscoverPause());
+        pause.setEnabled(UserConfig.isLanDiscover());
+        pause.setToolTipText("默认关。已有连接时暂停广播和探测。");
+
+        JPanel portRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+        portRow.setOpaque(false);
+        portRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        portRow.add(new JLabel("探测端口"));
+        JTextField fieldDiscoPort = new JTextField(String.valueOf(UserConfig.getLanDiscoverPort()), 6);
+        fieldDiscoPort.setEnabled(UserConfig.isLanDiscover());
+        sizeDigitField(fieldDiscoPort, 6);
+        portRow.add(fieldDiscoPort);
+
+        JPanel maxRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+        maxRow.setOpaque(false);
+        maxRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        maxRow.add(new JLabel("中键启动最多客户端"));
+        JTextField fieldMaxClients = new JTextField(String.valueOf(UserConfig.getMaxClients()), 4);
+        fieldMaxClients.setToolTipText("1–64。左键启动仍为 1 人；中键启动用此上限。下次启动生效。");
+        sizeDigitField(fieldMaxClients, 4);
+        maxRow.add(fieldMaxClients);
+
+        JCheckBox qrFocusClose = new JCheckBox("二维码失焦自动关闭");
+        qrFocusClose.setAlignmentX(Component.LEFT_ALIGNMENT);
+        qrFocusClose.setSelected(UserConfig.isQrCloseOnFocusLost());
+        qrFocusClose.setToolTipText("默认关。打开后，点到其它窗口/软件时二维码自动关掉（Esc 仍可关）。");
+
+        JPanel rateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+        rateRow.setOpaque(false);
+        rateRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        rateRow.add(new JLabel("授权限流（次/分·IP）"));
+        JTextField fieldAuthRate = new JTextField(String.valueOf(UserConfig.getAuthRatePerMin()), 4);
+        fieldAuthRate.setToolTipText("同一 IP 每分钟最多几条授权请求；超出静默拒绝。1–60，默认 3。");
+        sizeDigitField(fieldAuthRate, 4);
+        rateRow.add(fieldAuthRate);
+
+        JPanel coolRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+        coolRow.setOpaque(false);
+        coolRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        coolRow.add(new JLabel("拒绝后冷却（秒）"));
+        JTextField fieldAuthCool = new JTextField(String.valueOf(UserConfig.getAuthCooldownSec()), 5);
+        fieldAuthCool.setToolTipText("点「拒绝」后该 IP 冷却期内静默拒绝。0=不冷却，最大 86400，默认 120。");
+        sizeDigitField(fieldAuthCool, 5);
+        coolRow.add(fieldAuthCool);
+
+        JLabel blTitle = new JLabel("授权黑名单（每行一个 IP）");
+        blTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JTextArea areaBlacklist = new JTextArea(UserConfig.getAuthBlacklistText(), 4, 28);
+        areaBlacklist.setLineWrap(false);
+        areaBlacklist.setToolTipText("名单内 IP 的授权请求一律静默拒绝。也可在待授权列表点「拉黑」。");
+        JScrollPane blScroll = new JScrollPane(areaBlacklist);
+        blScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+        blScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(96)));
+
+        JLabel hint = new JLabel("<html><body style='width:360px'>平时请扫码。打开探测后：客户端点设备会进「待授权」列表，"
+                + "点开后允许才发一次性密钥。限流/冷却/黑名单防骚扰。探测和连接默认都是 54300"
+                + "（连接 TCP，探测 UDP）。防火墙若只放行 TCP，还要放行 UDP 54300。</body></html>");
+        hint.setForeground(MUTED);
+        hint.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        discover.addActionListener(e -> {
+            boolean on = discover.isSelected();
+            pause.setEnabled(on);
+            announce.setEnabled(on);
+            fieldDiscoPort.setEnabled(on);
+        });
+
+        panel.add(discover);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(announce);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(pause);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(portRow);
+        panel.add(Box.createVerticalStrut(UserConfig.s(10)));
+        panel.add(maxRow);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(qrFocusClose);
+        panel.add(Box.createVerticalStrut(UserConfig.s(10)));
+        panel.add(rateRow);
+        panel.add(Box.createVerticalStrut(UserConfig.s(4)));
+        panel.add(coolRow);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(blTitle);
+        panel.add(Box.createVerticalStrut(UserConfig.s(4)));
+        panel.add(blScroll);
+        panel.add(Box.createVerticalStrut(UserConfig.s(8)));
+        panel.add(hint);
+        panel.add(Box.createVerticalStrut(UserConfig.s(10)));
+        JButton resetDefaults = new JButton("恢复默认设置");
+        resetDefaults.setAlignmentX(Component.LEFT_ALIGNMENT);
+        resetDefaults.setToolTipText("缩放、小窗、监听、固定 PIN、探测和授权都回到默认。正在运行的服务不中断。");
+        final boolean[] restored = {false};
+        final boolean[] wasMini = {false};
+        final float[] oldScale = {1f};
+        resetDefaults.addActionListener(e -> {
+            int yes = JOptionPane.showConfirmDialog(panel,
+                    "界面缩放、小窗、监听端口、启动即开服、固定 PIN、记住的连接、探测和授权都会回到默认。\n"
+                            + "正在运行的服务不中断，端口下次启动再生效。",
+                    "恢复默认设置", JOptionPane.YES_NO_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (yes != JOptionPane.YES_OPTION) {
+                return;
+            }
+            wasMini[0] = miniMode;
+            oldScale[0] = UserConfig.getUiScale();
+            UserConfig.resetToDefaults();
+            discover.setSelected(false);
+            pause.setSelected(false);
+            pause.setEnabled(false);
+            announce.setSelected(true);
+            announce.setEnabled(false);
+            fieldDiscoPort.setText("54300");
+            fieldDiscoPort.setEnabled(false);
+            fieldMaxClients.setText("7");
+            qrFocusClose.setSelected(false);
+            fieldAuthRate.setText("3");
+            fieldAuthCool.setText("120");
+            areaBlacklist.setText("");
+            restored[0] = true;
+        });
+        panel.add(resetDefaults);
+
+        int r = JOptionPane.showConfirmDialog(frame, panel, "设置 · TextSend",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (restored[0]) {
+            finishRestoreUi(wasMini[0], oldScale[0]);
+        }
+        if (r != JOptionPane.OK_OPTION) {
+            if (restored[0]) {
+                flashStatus("已恢复默认设置");
+            }
+            return;
+        }
+        int port;
+        try {
+            port = Integer.parseInt(fieldDiscoPort.getText().trim());
+        } catch (Exception ex) {
+            flashStatus("探测端口须为 1–65535");
+            return;
+        }
+        if (!UserConfig.setLanDiscoverPort(port) && discover.isSelected()) {
+            flashStatus("探测端口须为 1–65535");
+            return;
+        }
+        int maxN;
+        try {
+            maxN = Integer.parseInt(fieldMaxClients.getText().trim());
+        } catch (Exception ex) {
+            flashStatus("最大客户端数须为 1–64");
+            return;
+        }
+        if (!UserConfig.setMaxClients(maxN)) {
+            flashStatus("最大客户端数须为 1–64");
+            return;
+        }
+        int rateN;
+        try {
+            rateN = Integer.parseInt(fieldAuthRate.getText().trim());
+        } catch (Exception ex) {
+            flashStatus("授权限流须为 1–60");
+            return;
+        }
+        if (!UserConfig.setAuthRatePerMin(rateN)) {
+            flashStatus("授权限流须为 1–60");
+            return;
+        }
+        int coolN;
+        try {
+            coolN = Integer.parseInt(fieldAuthCool.getText().trim());
+        } catch (Exception ex) {
+            flashStatus("冷却秒数须为 0–86400");
+            return;
+        }
+        if (!UserConfig.setAuthCooldownSec(coolN)) {
+            flashStatus("冷却秒数须为 0–86400");
+            return;
+        }
+        UserConfig.setAuthBlacklistText(areaBlacklist.getText());
+        UserConfig.setQrCloseOnFocusLost(qrFocusClose.isSelected());
+        UserConfig.setLanDiscoverAnnounce(announce.isSelected());
+        UserConfig.setLanDiscoverPause(pause.isSelected());
+        UserConfig.setLanDiscover(discover.isSelected());
+        dropBlacklistedPending();
+        refreshLanPeers();
+        refreshAuthPending();
+        applyActionTooltips();
+        flashStatus(restored[0] ? "已恢复默认设置" : "设置已保存");
+    }
+
+    /** 恢复默认已经写盘。缩放或小窗要等设置框关掉再重建窗口。 */
+    private static void finishRestoreUi(boolean wasMini, float oldScale) {
+        if (wasMini) {
+            setMiniMode(false);
+            return;
+        }
+        if (Math.abs(oldScale - 1f) > 0.0005f) {
+            Point keepLoc = frame != null ? frame.getLocation() : null;
+            buildUi(isServerMode);
+            if (keepLoc != null && frame != null) {
+                frame.setLocation(keepLoc);
+            }
+            return;
+        }
+        serverListenPort = String.valueOf(UserConfig.getListenPort());
+        if (fieldPort != null) {
+            fieldPort.setText(serverListenPort);
+        }
+        if (checkAutoStart != null) {
+            checkAutoStart.setSelected(UserConfig.isAutoStartServer());
+        }
+        if (fieldCustomPin != null) {
+            fieldCustomPin.setText(UserConfig.getCustomPin());
+        }
+        if (checkCustomPin != null) {
+            checkCustomPin.setSelected(UserConfig.isCustomPinEnabled());
+        }
+        if (checkRememberClient != null) {
+            checkRememberClient.setSelected(UserConfig.isRememberLastClient());
+        }
+        if (checkFollowLinks != null) {
+            checkFollowLinks.setSelected(UserConfig.isFollowSymlinks());
+        }
+        if (toggleMini != null) {
+            toggleMini.setSelected(miniMode);
+        }
+        refreshLanPeers();
+        refreshAuthPending();
+        applyActionTooltips();
+    }
+
+    /** 探测线程收到授权请求时调用（任意线程）。新请求直接弹出「在线」面板。 */
+    public static void onLanAuthRequest(LanAuth.Request req) {
+        if (req == null) {
+            return;
+        }
+        if (!UserConfig.isLanDiscover() || !isServerRunning()) {
+            denyAuthSilent(req);
+            SwingUtilities.invokeLater(() -> flashStatus(!isServerRunning()
+                    ? "授权请求已到，但服务端没开"
+                    : "授权请求已到，但局域网探测是关的"));
+            return;
+        }
+        String host = req.host == null ? "" : req.host.trim();
+        PendingAuth already = authPendingByHost.get(host);
+        if (already != null && already.req != null && req.nonce != null
+                && java.util.Arrays.equals(already.req.nonce, req.nonce)) {
+            if (req.tcpReply != null) {
+                already.req.tcpReply = req.tcpReply;
+            }
+            return;
+        }
+        if (host.isEmpty() || UserConfig.isAuthBlacklisted(host)) {
+            denyAuthSilent(req);
+            SwingUtilities.invokeLater(() -> flashStatus("已忽略黑名单授权请求 " + host));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long until = authCooldownUntil.get(host);
+        if (until != null && until > now) {
+            denyAuthSilent(req);
+            long left = Math.max(1L, (until - now + 999) / 1000);
+            SwingUtilities.invokeLater(() -> flashStatus("授权冷却中（约 " + left + " 秒），未弹出"));
+            return;
+        }
+        if (!noteAuthHit(host, now)) {
+            denyAuthSilent(req);
+            SwingUtilities.invokeLater(() -> flashStatus("授权请求过频，已冷却，未弹出"));
+            return;
+        }
+        boolean firstSlot = !authPendingByHost.containsKey(host) && authPendingByHost.isEmpty();
+        PendingAuth prev = authPendingByHost.put(host, new PendingAuth(req, now));
+        if (prev != null && prev.req != null && !java.util.Arrays.equals(prev.req.nonce, req.nonce)) {
+            denyAuthSilent(prev.req);
+        }
+        trimAuthPendingOverflow();
+        if (req.tcpReply == null) {
+            LanDiscover.sendAuthPacket(req.host, req.replyPort, LanAuth.encodePending(req.nonce));
+        }
+        SwingUtilities.invokeLater(() -> {
+            refreshAuthPending();
+            if (firstSlot || prev == null) {
+                flashStatus("有授权请求");
+                showSessionPopup();
+            }
+        });
+    }
+
+    /** @return false 表示超限，应静默拒绝 */
+    private static boolean noteAuthHit(String host, long now) {
+        int limit = UserConfig.getAuthRatePerMin();
+        long windowMs = 60_000L;
+        java.util.concurrent.ConcurrentLinkedDeque<Long> hits =
+                authHitsByHost.computeIfAbsent(host, h -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+        while (true) {
+            Long oldest = hits.peekFirst();
+            if (oldest == null || now - oldest < windowMs) {
+                break;
+            }
+            hits.pollFirst();
+        }
+        if (hits.size() >= limit) {
+            int cool = UserConfig.getAuthCooldownSec();
+            if (cool > 0) {
+                authCooldownUntil.put(host, now + cool * 1000L);
+            }
+            return false;
+        }
+        hits.addLast(now);
+        return true;
+    }
+
+    private static void trimAuthPendingOverflow() {
+        while (authPendingByHost.size() > AUTH_PENDING_MAX) {
+            String oldestHost = null;
+            long oldestAt = Long.MAX_VALUE;
+            for (var e : authPendingByHost.entrySet()) {
+                if (e.getValue().at < oldestAt) {
+                    oldestAt = e.getValue().at;
+                    oldestHost = e.getKey();
+                }
+            }
+            if (oldestHost == null) {
+                break;
+            }
+            PendingAuth drop = authPendingByHost.remove(oldestHost);
+            if (drop != null) {
+                denyAuthSilent(drop.req);
+            }
+        }
+    }
+
+    private static void replyAuth(LanAuth.Request req, byte[] packet) {
+        if (req == null || packet == null) {
+            return;
+        }
+        if (req.tcpReply != null) {
+            req.tcpReply.complete(packet);
+            return;
+        }
+        LanDiscover.sendAuthPacket(req.host, req.replyPort, packet);
+    }
+
+    private static void denyAuthSilent(LanAuth.Request req) {
+        if (req == null) {
+            return;
+        }
+        replyAuth(req, LanAuth.encodeDeny(req.nonce));
+    }
+
+    private static void applyAuthCooldown(String host) {
+        int cool = UserConfig.getAuthCooldownSec();
+        if (cool <= 0 || host == null || host.isBlank()) {
+            return;
+        }
+        authCooldownUntil.put(host, System.currentTimeMillis() + cool * 1000L);
+    }
+
+    private static void clearAuthPending(boolean denyAll) {
+        if (denyAll) {
+            for (PendingAuth p : authPendingByHost.values()) {
+                denyAuthSilent(p.req);
+            }
+        }
+        authPendingByHost.clear();
+    }
+
+    private static void dropBlacklistedPending() {
+        for (String host : new java.util.ArrayList<>(authPendingByHost.keySet())) {
+            if (UserConfig.isAuthBlacklisted(host)) {
+                PendingAuth p = authPendingByHost.remove(host);
+                if (p != null) {
+                    denyAuthSilent(p.req);
+                }
+            }
+        }
+    }
+
+    private static void ensureLanPeerTimer() {
+        if (lanPeerTimer != null) {
+            return;
+        }
+        lanPeerTimer = new Timer(1000, e -> {
+            refreshLanPeers();
+            refreshAuthPending();
+            refreshConnectedClients();
+        });
+        lanPeerTimer.setRepeats(true);
+        lanPeerTimer.start();
+    }
+
+    private static void refreshAuthPending() {
+        JPanel box = authPendingBox;
+        if (box == null) {
+            return;
+        }
+        if (!isServerRunning() || !UserConfig.isLanDiscover()) {
+            if (!authPendingByHost.isEmpty()) {
+                clearAuthPending(true);
+            }
+            hideAuthPendingPopup();
+            box.removeAll();
+            authPendingEntryBtn = null;
+            authPendingSig = "";
+            box.setVisible(false);
+            box.revalidate();
+            box.repaint();
+            updateClientsButton();
+            return;
+        }
+        // 过期清理（客户端等 60s）
+        long now = System.currentTimeMillis();
+        for (String host : new java.util.ArrayList<>(authPendingByHost.keySet())) {
+            PendingAuth p = authPendingByHost.get(host);
+            if (p != null && now - p.at > LanAuth.REQUEST_WAIT_MS) {
+                authPendingByHost.remove(host, p);
+                denyAuthSilent(p.req);
+            }
+        }
+        hideInlineSession(box);
+        updateClientsButton();
+    }
+
+    private static void hideAuthPendingPopup() {
+        if (authPendingPopup != null) {
+            authPendingPopup.setVisible(false);
+            authPendingPopup = null;
+        }
+    }
+
+    private static void decideAuth(String host, boolean allow, boolean blacklist) {
+        if (host == null || host.isBlank()) {
+            return;
+        }
+        PendingAuth pending = authPendingByHost.remove(host);
+        if (blacklist) {
+            UserConfig.addAuthBlacklist(host);
+        }
+        if (pending == null) {
+            if (blacklist) {
+                flashStatus("已拉黑 " + host);
+            }
+            refreshAuthPending();
+            return;
+        }
+        LanAuth.Request req = pending.req;
+        String name = req.name == null || req.name.isBlank() ? "未知设备" : req.name;
+        if (allow && isServerRunning() && UserConfig.isLanDiscover() && !UserConfig.isAuthBlacklisted(host)) {
+            authCooldownUntil.remove(host);
+            byte[] psk = LanAuth.newPsk();
+            long exp = System.currentTimeMillis() + LanAuth.GRANT_TTL_MS;
+            TsServer.putLanGrantCurrent(req.host, psk, LanAuth.GRANT_TTL_MS, name);
+            replyAuth(req, LanAuth.encodeGrant(req.nonce, psk, getServerListenPort(), exp));
+            flashStatus("已允许 " + name);
+        } else {
+            TsServer.revokeLanGrantCurrent(req.host);
+            denyAuthSilent(req);
+            applyAuthCooldown(host);
+            if (blacklist) {
+                flashStatus("已拉黑 " + name);
+            } else {
+                flashStatus("已拒绝 " + name);
+            }
+        }
+        refreshAuthPending();
+    }
+
+    private static void refreshConnectedClients() {
+        JPanel box = connectedBox;
+        if (box == null) {
+            return;
+        }
+        hideInlineSession(box);
+        updateClientsButton();
+    }
+
+    /** 待授权 / 已连接平时不占主界面，只在点「在线」时弹出。 */
+    private static void hideInlineSession(JPanel box) {
+        if (box == null) {
+            return;
+        }
+        if (box.getComponentCount() > 0) {
+            box.removeAll();
+        }
+        box.setVisible(false);
+    }
+
+    private static void updateClientsButton() {
+        if (buttonClients == null) {
+            return;
+        }
+        if (!isServerMode || miniMode) {
+            buttonClients.setVisible(false);
+            return;
+        }
+        buttonClients.setVisible(true);
+        int pending = authPendingByHost.size();
+        int alive = isServerRunning() ? TsServer.listAliveClientsCurrent().size() : 0;
+        if (!isServerRunning()) {
+            buttonClients.setText("在线 —");
+        } else if (pending > 0) {
+            buttonClients.setText("待授权 " + pending + " · 在线 " + alive);
+        } else {
+            buttonClients.setText("在线 " + alive);
+        }
+    }
+
+    /** 工具栏「在线」：待授权（接受/拒绝/拉黑）+ 已连接（踢出/拉黑）。没人连上也在。 */
+    private static void showSessionPopup() {
+        if (buttonClients == null || frame == null || !buttonClients.isShowing()) {
+            return;
+        }
+        if (!isServerRunning()) {
+            flashStatus("请先启动服务端");
+            return;
+        }
+        java.util.List<PendingAuth> pending = new java.util.ArrayList<>(authPendingByHost.values());
+        pending.sort((a, b) -> Long.compare(a.at, b.at));
+        List<TsServer.AliveClient> clients = TsServer.listAliveClientsCurrent();
+
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(new EmptyBorder(UserConfig.s(8), UserConfig.s(10), UserConfig.s(8), UserConfig.s(10)));
+
+        JLabel h1 = new JLabel("待授权  " + pending.size());
+        h1.setFont(h1.getFont().deriveFont(Font.BOLD, (float) UserConfig.s(13)));
+        h1.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(h1);
+        if (pending.isEmpty()) {
+            JLabel empty = new JLabel("暂无授权请求");
+            empty.setForeground(MUTED);
+            empty.setAlignmentX(Component.LEFT_ALIGNMENT);
+            panel.add(empty);
+        }
+        for (PendingAuth item : pending) {
+            LanAuth.Request req = item.req;
+            String name = req.name == null || req.name.isBlank() ? "未知设备" : req.name;
+            panel.add(sessionRow(name + "  ·  " + req.host,
+                    new String[]{"接受", "拒绝", "拉黑"},
+                    new Runnable[]{
+                            () -> decideAuth(req.host, true, false),
+                            () -> decideAuth(req.host, false, false),
+                            () -> decideAuth(req.host, false, true)
+                    }));
+        }
+
+        panel.add(Box.createVerticalStrut(UserConfig.s(8)));
+        JLabel h2 = new JLabel("已连接  " + clients.size()
+                + (maxConnection > 1 ? " / " + maxConnection : ""));
+        h2.setFont(h2.getFont().deriveFont(Font.BOLD, (float) UserConfig.s(13)));
+        h2.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(h2);
+        if (clients.isEmpty()) {
+            JLabel empty = new JLabel("还没有客户端");
+            empty.setForeground(MUTED);
+            empty.setAlignmentX(Component.LEFT_ALIGNMENT);
+            panel.add(empty);
+        }
+        for (TsServer.AliveClient c : clients) {
+            String label = c.displayLabel();
+            if (c.name.isBlank() && TsServer.isSelfHost(c.host)) {
+                label = LanDiscover.deviceName() + "  ·  " + c.host;
+            }
+            String host = c.host;
+            panel.add(sessionRow(label,
+                    new String[]{"踢出", "拉黑"},
+                    new Runnable[]{
+                            () -> {
+                                TsServer.kickHostCurrent(host);
+                                flashStatus("已踢下线 " + host);
+                                refreshConnectedClients();
+                            },
+                            () -> {
+                                UserConfig.addAuthBlacklist(host);
+                                TsServer.kickHostCurrent(host);
+                                flashStatus("已拉黑并踢下线 " + host);
+                                refreshConnectedClients();
+                            }
+                    }));
+        }
+
+        hideSessionPopup();
+        JPopupMenu pop = new JPopupMenu();
+        sessionPopup = pop;
+        pop.setBorder(BorderFactory.createLineBorder(BORDER));
+        pop.add(panel);
+        pop.show(buttonClients, 0, buttonClients.getHeight());
+    }
+
+    private static JPanel sessionRow(String label, String[] actions, Runnable[] runs) {
+        JPanel row = new JPanel(new BorderLayout(UserConfig.s(8), 0));
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(UserConfig.s(520), UserConfig.s(36)));
+        JLabel lab = new JLabel(label);
+        lab.setFont(lab.getFont().deriveFont((float) UserConfig.s(12)));
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, UserConfig.s(4), 0));
+        btns.setOpaque(false);
+        for (int i = 0; i < actions.length; i++) {
+            JButton b = new JButton(actions[i]);
+            b.setFont(b.getFont().deriveFont((float) UserConfig.s(11)));
+            int idx = i;
+            b.addActionListener(e -> {
+                hideSessionPopup();
+                runs[idx].run();
+                updateClientsButton();
+            });
+            btns.add(b);
+        }
+        row.add(lab, BorderLayout.CENTER);
+        row.add(btns, BorderLayout.EAST);
+        return row;
+    }
+
+    private static void hideSessionPopup() {
+        if (sessionPopup != null) {
+            sessionPopup.setVisible(false);
+            sessionPopup = null;
+        }
+    }
+
+    private static void hideConnectedPopup() {
+        if (connectedPopup != null) {
+            connectedPopup.setVisible(false);
+            connectedPopup = null;
+        }
+    }
+
+    private static void refreshLanPeers() {
+        JPanel box = lanPeerBox;
+        if (box == null) {
+            return;
+        }
+        boolean on = UserConfig.isLanDiscover();
+        boolean paused = on && LanDiscover.pausedNow();
+        String bindError = on && !paused ? LanDiscover.lastBindError() : "";
+        List<LanDiscover.Peer> peers = on && !paused && bindError.isBlank() ? LanDiscover.peers() : List.of();
+        StringBuilder sig = new StringBuilder();
+        sig.append(on).append('|').append(paused).append('|').append(bindError);
+        for (LanDiscover.Peer peer : peers) {
+            sig.append('|').append(peer.name).append('\u0000').append(peer.host).append(':').append(peer.tcpPort);
+        }
+        String next = sig.toString();
+        if (next.equals(lanPeerSig) && box.isVisible() == on) {
+            return;
+        }
+        if (!bindError.isBlank() && !lanPeerSig.contains(bindError)) {
+            flashStatus(bindError);
+        }
+        lanPeerSig = next;
+        box.removeAll();
+        box.setVisible(on);
+        if (on) {
+            String titleText;
+            if (paused) {
+                titleText = "已连接，探测已暂停";
+            } else if (!bindError.isBlank()) {
+                titleText = bindError;
+            } else if (peers.isEmpty()) {
+                titleText = "正在探测…还没看到其他 TextSend";
+            } else {
+                titleText = "局域网设备（点一下请求授权）";
+            }
+            JLabel title = new JLabel(titleText);
+            title.setForeground(MUTED);
+            title.setFont(title.getFont().deriveFont((float) UserConfig.s(12)));
+            title.setAlignmentX(Component.LEFT_ALIGNMENT);
+            box.add(title);
+            java.util.Map<String, Integer> idCounts = new java.util.HashMap<>();
+            for (LanDiscover.Peer peer : peers) {
+                if (peer.idKey != null && !peer.idKey.isBlank()) {
+                    idCounts.merge(peer.idKey, 1, Integer::sum);
+                }
+            }
+            for (LanDiscover.Peer peer : peers) {
+                String label = (peer.name == null || peer.name.isBlank())
+                        ? peer.host + ":" + peer.tcpPort
+                        : peer.name + "  " + peer.host + ":" + peer.tcpPort;
+                if (peer.idKey != null && !peer.idKey.isBlank()
+                        && idCounts.getOrDefault(peer.idKey, 0) > 1) {
+                    label += "  （可能是同一设备）";
+                }
+                JButton btn = new JButton(label);
+                btn.setAlignmentX(Component.LEFT_ALIGNMENT);
+                btn.setFont(btn.getFont().deriveFont((float) UserConfig.s(12)));
+                btn.setToolTipText(idCounts.getOrDefault(peer.idKey, 0) > 1
+                        ? "实例号相同，多半是同一进程的多网卡。点一下请求授权"
+                        : "点一下：向对方请求授权，对方允许后免 PIN 连接");
+                btn.addActionListener(e -> applyDiscoveredPeer(peer.host, peer.tcpPort));
+                box.add(btn);
+            }
+        }
+        box.revalidate();
+        box.repaint();
+    }
+
+    private static void applyDiscoveredPeer(String host, int tcpPort) {
+        if (isServerMode) {
+            return;
+        }
+        if (isClientConnected || clientHandshaking) {
+            flashStatus("已连接，未改连接串");
+            return;
+        }
+        if (!UserConfig.isLanDiscover()) {
+            flashStatus("请先在设置里打开局域网探测");
+            return;
+        }
+        flashStatus("正在请求授权 " + host + "…");
+        int udpPort = UserConfig.getLanDiscoverPort();
+        Thread t = new Thread(() -> {
+            try {
+                LanAuth.Grant grant = LanDiscover.requestAuth(host, udpPort);
+                int port = grant.tcpPort > 0 ? grant.tcpPort : tcpPort;
+                String uri = TsUri.format(host, port, grant.pskB64());
+                SwingUtilities.invokeLater(() -> {
+                    JTextArea area = miniMode && miniTextArea != null ? miniTextArea : areaMessage;
+                    if (area != null) {
+                        area.setText(uri);
+                    }
+                    flashStatus("已获授权，正在连接 " + host);
+                    startClient();
+                });
+            } catch (Exception e) {
+                String msg = e.getMessage() == null ? "授权失败" : e.getMessage();
+                if (e instanceof java.util.concurrent.TimeoutException
+                        || (e.getCause() instanceof java.util.concurrent.TimeoutException)) {
+                    msg = "等待服务端允许超时";
+                }
+                String tip = msg;
+                SwingUtilities.invokeLater(() -> flashStatus(tip));
+            }
+        }, "ts-lan-auth");
+        t.setDaemon(true);
+        t.start();
+    }
+
     private static void flashStatus(String s) {
         if (labelStatus == null) {
             return;
@@ -1962,7 +2855,7 @@ public class TextSendMain {
                 · 选择网卡 IP 和端口，点「启动」。
                 · 启动后仍可换 IP，二维码和连接串会跟着变，不用停服务。
                 · 左键启动：最多 1 个客户端，并打开二维码。
-                · 中键启动：最多 7 个客户端。
+                · 中键启动：最多 N 个客户端（N 在「设置」里改，默认 7，范围 1–64）。
                 · 右键启动：最多 1 个客户端，不弹二维码。
                 · 可勾选「启动即开服」：下次打开自动开服（默认关）。会记住上次监听 IP。
                 · 可勾选「固定 PIN」并输入 8 位数字：每次启动服务端用同一 PIN（默认关，随机 PIN + 长密钥）。
@@ -1972,6 +2865,12 @@ public class TextSendMain {
                 —— 客户端 ——
                 · 粘贴连接串 ts://IP/k... 后点「连接」。端口可省略，默认 54300。
                 · 可勾选「记住上次连接」：PIN 连成功后记住 IP、端口和 PIN（默认关，不记长密钥）。
+                · 「设置」里可开局域网探测（默认关）：客户端列出同一局域网开服的 TextSend。
+                · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，点开后「允许 / 拒绝 / 拉黑」。
+                · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 120 秒）、黑名单。
+                · 连接和探测默认都用 54300。连接是 TCP，发现设备是 UDP（广播不能走 TCP），两端要一致。
+                · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行 UDP 54300。可勾「有连接时关闭探测」。
+                · 服务端「已连接」列表可对某一客户端「踢下线」，无需重启服务。
                 · 不要只填 IP。PIN 路径用 8 位短码，扫码用长密钥。
                 · 握手成功后才清空输入框；失败或点断开则保留连接串。
 
@@ -2013,12 +2912,13 @@ public class TextSendMain {
                 —— 二维码 ——
                 · 左键启动会弹出二维码；有客户端连上后自动关闭。
                 · 点「二维码」手动打开则保持显示，连上也不关。Esc 关闭。
+                · 设置里可开「二维码失焦自动关闭」：点到其它窗口/软件时关掉（默认关）。
                 · 高 UI 缩放下二维码默认完整显示；可拖动窗口边角放大，始终整张码可见可扫。
 
                 —— 配置文件 ——
                 · 优先：程序同一目录的 textsend.properties（jar / 绿色版）。
                 · 程序目录不能写时（系统安装包）：主目录下仅一份 .textsend.properties。
-                · 不建 ~/.config。保存项：uiScale、listenPort、preferMini、followSymlinks、listenIp、autoStartServer、customPinEnabled、customPin、rememberLastClient、clientHost、clientPort、clientPin。
+                · 不建 ~/.config。保存项含 maxClients、authRatePerMin、authCooldownSec、authBlacklist、lanDiscover* 等。
                 · 「启动即开服」默认关；会记住上次选的监听 IP，换网后该 IP 不在网卡列表则自动重选。
                 """.formatted(VERSION);
         JTextArea area = new JTextArea(text);
@@ -3509,6 +4409,17 @@ public class TextSendMain {
                 public void windowClosed(WindowEvent e) {
                     if (qrDialog != null && e.getWindow() == qrDialog) {
                         qrDialog = null;
+                    }
+                }
+
+                @Override
+                public void windowDeactivated(WindowEvent e) {
+                    if (!UserConfig.isQrCloseOnFocusLost()) {
+                        return;
+                    }
+                    if (qrDialog != null && e.getWindow() == qrDialog) {
+                        // 失焦：点到主窗口、其它对话框或其它软件时关掉
+                        SwingUtilities.invokeLater(TextSendMain::closeQrDialog);
                     }
                 }
             });

@@ -1,12 +1,19 @@
 package protocol;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -31,7 +38,43 @@ public final class TsServer implements Runnable {
     private final List<TsPeer> peers = new ArrayList<>();
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final AuthLimiter authLimiter = new AuthLimiter();
+    private final ConcurrentHashMap<String, GrantEntry> lanGrants = new ConcurrentHashMap<>();
+    /** 授权时记下的设备名，供已连接列表展示（按 IP）。 */
+    private final ConcurrentHashMap<String, String> clientNames = new ConcurrentHashMap<>();
     private ServerSocket serverSocket;
+
+    private static final class GrantEntry {
+        final byte[] psk;
+        final long expireAt;
+
+        GrantEntry(byte[] psk, long expireAt) {
+            this.psk = psk;
+            this.expireAt = expireAt;
+        }
+    }
+
+    /** 已握手的连接摘要，供踢下线 UI。 */
+    public static final class AliveClient {
+        public final String host;
+        public final int port;
+        public final String name;
+        public final TsPeer peer;
+
+        AliveClient(String host, int port, String name, TsPeer peer) {
+            this.host = host;
+            this.port = port;
+            this.name = name == null ? "" : name;
+            this.peer = peer;
+        }
+
+        /** 列表主文案：有设备名则「名 · IP」，否则仅 IP。 */
+        public String displayLabel() {
+            if (name != null && !name.isBlank()) {
+                return name + "  ·  " + host;
+            }
+            return host == null ? "" : host;
+        }
+    }
 
     public TsServer(int port, int maxConnections, PairingMaterial material, IntConsumer onClientCount,
                    FileIoCallback fileIo) {
@@ -66,6 +109,50 @@ public final class TsServer implements Runnable {
     public static int aliveCountCurrent() {
         TsServer s = instance;
         return s == null ? -1 : s.aliveCount();
+    }
+
+    public static List<AliveClient> listAliveClientsCurrent() {
+        TsServer s = instance;
+        if (s == null) {
+            return List.of();
+        }
+        return s.listAliveClients();
+    }
+
+    public static boolean kickHostCurrent(String host) {
+        TsServer s = instance;
+        return s != null && s.kickHost(host);
+    }
+
+    public static void putLanGrantCurrent(String host, byte[] psk, long ttlMs) {
+        putLanGrantCurrent(host, psk, ttlMs, null);
+    }
+
+    public static void putLanGrantCurrent(String host, byte[] psk, long ttlMs, String deviceName) {
+        TsServer s = instance;
+        if (s != null) {
+            s.putLanGrant(host, psk, ttlMs, deviceName);
+        }
+    }
+
+    public static void revokeLanGrantCurrent(String host) {
+        TsServer s = instance;
+        if (s != null) {
+            s.revokeLanGrant(host);
+        }
+    }
+
+    /** 握手用：有未过期授权票则返回其 PSK，否则 null。不消费。 */
+    public static byte[] peekLanGrantPsk(String host) {
+        TsServer s = instance;
+        return s == null ? null : s.peekGrant(host);
+    }
+
+    public static void consumeLanGrant(String host, byte[] psk) {
+        TsServer s = instance;
+        if (s != null) {
+            s.consumeGrant(host, psk);
+        }
     }
 
     public static int sendFileToAllCurrent(Path path, BooleanSupplier cancelled) throws Exception {
@@ -113,6 +200,8 @@ public final class TsServer implements Runnable {
 
     public void stop() {
         running.set(false);
+        lanGrants.clear();
+        clientNames.clear();
         try {
             if (serverSocket != null) {
                 serverSocket.close();
@@ -146,6 +235,9 @@ public final class TsServer implements Runnable {
                     sock.setTcpNoDelay(true);
                     sock.setKeepAlive(true);
                 } catch (IOException ignored) {
+                }
+                if (divertAuth(sock)) {
+                    continue;
                 }
                 String ip = sock.getInetAddress() == null ? "?" : sock.getInetAddress().getHostAddress();
                 System.out.println("Log: 【接入】TCP " + ip + ":" + sock.getPort()
@@ -194,6 +286,93 @@ public final class TsServer implements Runnable {
         }
     }
 
+    /**
+     * 开头是 TSA1 的连接是授权请求，不占会话名额。
+     * 正常握手由服务端先发 HELLO，客户端不会先开口。只等很短一会儿，
+     * 没字节就当普通连接，交给 TsPeer。
+     */
+    private boolean divertAuth(Socket sock) {
+        try {
+            sock.setSoTimeout(400);
+            java.io.InputStream in = sock.getInputStream();
+            byte[] head = readN(in, 4);
+            if (head[0] == 'T' && head[1] == 'S' && head[2] == 'A' && head[3] == '1') {
+                pool.execute(() -> finishAuthTcp(sock, in));
+                return true;
+            }
+            TsPeer.prime(sock, head);
+            return false;
+        } catch (java.net.SocketTimeoutException e) {
+            try {
+                sock.setSoTimeout(0);
+            } catch (IOException ignored) {
+            }
+            return false;
+        } catch (Exception e) {
+            try {
+                sock.close();
+            } catch (IOException ignored) {
+            }
+            return true;
+        }
+    }
+
+    private void finishAuthTcp(Socket sock, java.io.InputStream in) {
+        try {
+            byte[] meta = readN(in, 3);
+            if (meta[0] != 1 || meta[1] != application.LanAuth.TYPE_REQUEST) {
+                return;
+            }
+            int nameLen = meta[2] & 0xFF;
+            if (nameLen > application.LanAuth.NAME_MAX) {
+                return;
+            }
+            byte[] tail = readN(in, nameLen + application.LanAuth.NONCE_LEN);
+            byte[] full = new byte[7 + nameLen + application.LanAuth.NONCE_LEN];
+            full[0] = 'T';
+            full[1] = 'S';
+            full[2] = 'A';
+            full[3] = '1';
+            System.arraycopy(meta, 0, full, 4, 3);
+            System.arraycopy(tail, 0, full, 7, tail.length);
+            String ip = sock.getInetAddress() == null ? "" : sock.getInetAddress().getHostAddress();
+            application.LanAuth.Request req = application.LanAuth.parseRequest(
+                    full, full.length, ip, sock.getPort());
+            if (req == null) {
+                return;
+            }
+            java.util.concurrent.CompletableFuture<byte[]> fut = new java.util.concurrent.CompletableFuture<>();
+            req.tcpReply = fut;
+            sock.setSoTimeout(0);
+            application.TextSendMain.onLanAuthRequest(req);
+            byte[] resp = fut.get(application.LanAuth.REQUEST_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (resp != null) {
+                java.io.OutputStream out = sock.getOutputStream();
+                out.write(resp);
+                out.flush();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            try {
+                sock.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private static byte[] readN(java.io.InputStream in, int n) throws IOException {
+        byte[] buf = new byte[n];
+        int off = 0;
+        while (off < n) {
+            int r = in.read(buf, off, n - off);
+            if (r < 0) {
+                throw new java.io.EOFException("short read");
+            }
+            off += r;
+        }
+        return buf;
+    }
+
     public int sendToAll(String text) {
         List<TsPeer> snap;
         synchronized (peers) {
@@ -217,6 +396,148 @@ public final class TsServer implements Runnable {
     public int aliveCount() {
         synchronized (peers) {
             return (int) peers.stream().filter(TsPeer::isAlive).count();
+        }
+    }
+
+    public List<AliveClient> listAliveClients() {
+        List<AliveClient> out = new ArrayList<>();
+        synchronized (peers) {
+            for (TsPeer p : peers) {
+                if (!p.isAlive()) {
+                    continue;
+                }
+                String host = normalizeHost(p.remoteHost());
+                String name = clientNames.getOrDefault(host, "");
+                out.add(new AliveClient(host, p.remotePort(), name, p));
+            }
+        }
+        return out;
+    }
+
+    public boolean kickHost(String host) {
+        String h = normalizeHost(host);
+        if (h.isEmpty()) {
+            return false;
+        }
+        List<TsPeer> hit = new ArrayList<>();
+        synchronized (peers) {
+            for (TsPeer p : peers) {
+                if (h.equals(normalizeHost(p.remoteHost()))) {
+                    hit.add(p);
+                }
+            }
+        }
+        for (TsPeer p : hit) {
+            p.close();
+        }
+        revokeLanGrant(h);
+        clientNames.remove(h);
+        if (!hit.isEmpty()) {
+            notifyCount();
+        }
+        return !hit.isEmpty();
+    }
+
+    public void putLanGrant(String host, byte[] psk, long ttlMs) {
+        putLanGrant(host, psk, ttlMs, null);
+    }
+
+    public void putLanGrant(String host, byte[] psk, long ttlMs, String deviceName) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || psk == null || psk.length != Protocol.PSK_LEN) {
+            return;
+        }
+        pruneGrants();
+        lanGrants.put(h, new GrantEntry(Arrays.copyOf(psk, psk.length),
+                System.currentTimeMillis() + Math.max(5_000L, ttlMs)));
+        if (deviceName != null && !deviceName.isBlank()) {
+            clientNames.put(h, deviceName.trim());
+        }
+    }
+
+    public void revokeLanGrant(String host) {
+        String h = normalizeHost(host);
+        if (!h.isEmpty()) {
+            lanGrants.remove(h);
+        }
+    }
+
+    public void rememberClientName(String host, String deviceName) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || deviceName == null || deviceName.isBlank()) {
+            return;
+        }
+        clientNames.put(h, deviceName.trim());
+    }
+
+    byte[] peekGrant(String host) {
+        pruneGrants();
+        String h = normalizeHost(host);
+        if (h.isEmpty()) {
+            return null;
+        }
+        GrantEntry g = lanGrants.get(h);
+        if (g == null || g.expireAt <= System.currentTimeMillis()) {
+            return null;
+        }
+        return Arrays.copyOf(g.psk, g.psk.length);
+    }
+
+    void consumeGrant(String host, byte[] psk) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || psk == null) {
+            return;
+        }
+        GrantEntry g = lanGrants.get(h);
+        if (g != null && Arrays.equals(g.psk, psk)) {
+            lanGrants.remove(h, g);
+        }
+    }
+
+    /** 统一 IP 键：去括号、去 IPv4 映射前缀。 */
+    public static String normalizeHost(String host) {
+        if (host == null) {
+            return "";
+        }
+        String h = host.trim();
+        if (h.startsWith("[") && h.endsWith("]") && h.length() > 2) {
+            h = h.substring(1, h.length() - 1);
+        }
+        if (h.length() > 7 && h.regionMatches(true, 0, "::ffff:", 0, 7)) {
+            h = h.substring(7);
+        }
+        return h;
+    }
+
+    /** 是否连回本机（回环或本机网卡地址）。 */
+    public static boolean isSelfHost(String host) {
+        String h = normalizeHost(host);
+        if (h.isEmpty()) {
+            return false;
+        }
+        if ("127.0.0.1".equals(h) || "::1".equals(h) || "localhost".equalsIgnoreCase(h)) {
+            return true;
+        }
+        try {
+            for (NetworkInterface nif : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                for (InetAddress addr : Collections.list(nif.getInetAddresses())) {
+                    if (h.equals(normalizeHost(addr.getHostAddress()))) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private void pruneGrants() {
+        long now = System.currentTimeMillis();
+        for (Iterator<Map.Entry<String, GrantEntry>> it = lanGrants.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<String, GrantEntry> e = it.next();
+            if (e.getValue().expireAt <= now) {
+                it.remove();
+            }
         }
     }
 

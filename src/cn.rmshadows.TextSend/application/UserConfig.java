@@ -5,7 +5,14 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
+import java.util.stream.Collectors;
 
 /**
  * 用户配置：UI 缩放等。
@@ -29,6 +36,21 @@ public final class UserConfig {
     private static boolean customPinEnabled = false;
     private static String customPin = "";
     private static boolean rememberLastClient = false;
+    private static boolean lanDiscover = false;
+    private static boolean lanDiscoverPause = false;
+    /** 关了就不周期广播，只在收到客户端探测时回复 */
+    private static boolean lanDiscoverAnnounce = true;
+    private static int lanDiscoverPort = 54300;
+    /** 中键启动时的最大客户端数（左键仍为 1） */
+    private static int maxClients = 7;
+    /** 二维码失焦（点到别处/其它软件）时自动关闭 */
+    private static boolean qrCloseOnFocusLost = false;
+    /** 同一 IP 每分钟最多几条授权请求（超出静默拒绝） */
+    private static int authRatePerMin = 3;
+    /** 拒绝后该 IP 冷却秒数（冷却期内静默拒绝） */
+    private static int authCooldownSec = 120;
+    /** 授权黑名单 IP（持久化） */
+    private static final LinkedHashSet<String> authBlacklist = new LinkedHashSet<>();
     private static String clientHost = "";
     private static int clientPort = 54300;
     private static String clientPin = "";
@@ -103,6 +125,20 @@ public final class UserConfig {
                 customPin = "";
             }
             rememberLastClient = Boolean.parseBoolean(p.getProperty("rememberLastClient", "false"));
+            lanDiscover = Boolean.parseBoolean(p.getProperty("lanDiscover", "false"));
+            lanDiscoverPause = Boolean.parseBoolean(p.getProperty("lanDiscoverPause", "false"));
+            lanDiscoverAnnounce = Boolean.parseBoolean(p.getProperty("lanDiscoverAnnounce", "true"));
+            lanDiscoverPort = parsePort(54300, p.getProperty("lanDiscoverPort", "54300"));
+            // 旧默认 54301 收成和连接相同的 54300。单独改过的端口不动。
+            if (lanDiscoverPort == 54301) {
+                lanDiscoverPort = 54300;
+            }
+            maxClients = parseMaxClients(p.getProperty("maxClients", "7"));
+            qrCloseOnFocusLost = Boolean.parseBoolean(p.getProperty("qrCloseOnFocusLost", "false"));
+            authRatePerMin = parseBoundedInt(p.getProperty("authRatePerMin", "3"), 3, 1, 60);
+            authCooldownSec = parseBoundedInt(p.getProperty("authCooldownSec", "120"), 120, 0, 86400);
+            authBlacklist.clear();
+            authBlacklist.addAll(parseBlacklist(p.getProperty("authBlacklist", "")));
             clientHost = p.getProperty("clientHost", "").trim();
             clientPort = parsePort(54300, p.getProperty("clientPort", "54300"));
             clientPin = p.getProperty("clientPin", "").trim();
@@ -130,6 +166,15 @@ public final class UserConfig {
             p.setProperty("customPinEnabled", Boolean.toString(customPinEnabled));
             p.setProperty("customPin", customPin == null ? "" : customPin);
             p.setProperty("rememberLastClient", Boolean.toString(rememberLastClient));
+            p.setProperty("lanDiscover", Boolean.toString(lanDiscover));
+            p.setProperty("lanDiscoverPause", Boolean.toString(lanDiscoverPause));
+            p.setProperty("lanDiscoverAnnounce", Boolean.toString(lanDiscoverAnnounce));
+            p.setProperty("lanDiscoverPort", Integer.toString(lanDiscoverPort));
+            p.setProperty("maxClients", Integer.toString(maxClients));
+            p.setProperty("qrCloseOnFocusLost", Boolean.toString(qrCloseOnFocusLost));
+            p.setProperty("authRatePerMin", Integer.toString(authRatePerMin));
+            p.setProperty("authCooldownSec", Integer.toString(authCooldownSec));
+            p.setProperty("authBlacklist", String.join(",", authBlacklist));
             p.setProperty("clientHost", clientHost == null ? "" : clientHost);
             p.setProperty("clientPort", Integer.toString(clientPort));
             p.setProperty("clientPin", clientPin == null ? "" : clientPin);
@@ -169,6 +214,36 @@ public final class UserConfig {
 
     public static Path getFile() {
         return FILE;
+    }
+
+    /** 全部偏好回到出厂值并写盘。探测若开着会停掉。不碰正在跑的服务端口。 */
+    public static void resetToDefaults() {
+        boolean wasDiscover = lanDiscover;
+        uiScale = 1.0f;
+        listenPort = 54300;
+        preferMini = false;
+        followSymlinks = false;
+        listenIp = "";
+        autoStartServer = false;
+        customPinEnabled = false;
+        customPin = "";
+        rememberLastClient = false;
+        lanDiscover = false;
+        lanDiscoverPause = false;
+        lanDiscoverAnnounce = true;
+        lanDiscoverPort = 54300;
+        maxClients = 7;
+        qrCloseOnFocusLost = false;
+        authRatePerMin = 3;
+        authCooldownSec = 120;
+        authBlacklist.clear();
+        clientHost = "";
+        clientPort = 54300;
+        clientPin = "";
+        save();
+        if (wasDiscover) {
+            LanDiscover.halt();
+        }
     }
 
     public static float getUiScale() {
@@ -258,6 +333,191 @@ public final class UserConfig {
     public static void setRememberLastClient(boolean v) {
         rememberLastClient = v;
         save();
+    }
+
+    public static boolean isLanDiscover() {
+        return lanDiscover;
+    }
+
+    public static void setLanDiscover(boolean v) {
+        lanDiscover = v;
+        save();
+        if (v) {
+            LanDiscover.boot();
+        } else {
+            LanDiscover.halt();
+        }
+    }
+
+    public static boolean isLanDiscoverAnnounce() {
+        return lanDiscoverAnnounce;
+    }
+
+    public static void setLanDiscoverAnnounce(boolean v) {
+        lanDiscoverAnnounce = v;
+        save();
+    }
+
+    public static boolean isLanDiscoverPause() {
+        return lanDiscoverPause;
+    }
+
+    public static void setLanDiscoverPause(boolean v) {
+        lanDiscoverPause = v;
+        save();
+    }
+
+    public static int getLanDiscoverPort() {
+        return lanDiscoverPort >= 1 && lanDiscoverPort <= 65535 ? lanDiscoverPort : 54300;
+    }
+
+    public static boolean setLanDiscoverPort(int port) {
+        if (port < 1 || port > 65535) {
+            return false;
+        }
+        if (lanDiscoverPort == port) {
+            return true;
+        }
+        lanDiscoverPort = port;
+        save();
+        if (lanDiscover) {
+            LanDiscover.boot();
+        }
+        return true;
+    }
+
+    public static int getMaxClients() {
+        return maxClients >= 1 && maxClients <= 64 ? maxClients : 7;
+    }
+
+    public static boolean setMaxClients(int n) {
+        if (n < 1 || n > 64) {
+            return false;
+        }
+        if (maxClients == n) {
+            return true;
+        }
+        maxClients = n;
+        save();
+        return true;
+    }
+
+    public static boolean isQrCloseOnFocusLost() {
+        return qrCloseOnFocusLost;
+    }
+
+    public static void setQrCloseOnFocusLost(boolean v) {
+        qrCloseOnFocusLost = v;
+        save();
+    }
+
+    public static int getAuthRatePerMin() {
+        return authRatePerMin >= 1 && authRatePerMin <= 60 ? authRatePerMin : 3;
+    }
+
+    public static boolean setAuthRatePerMin(int n) {
+        if (n < 1 || n > 60) {
+            return false;
+        }
+        if (authRatePerMin == n) {
+            return true;
+        }
+        authRatePerMin = n;
+        save();
+        return true;
+    }
+
+    public static int getAuthCooldownSec() {
+        return Math.max(0, Math.min(86400, authCooldownSec));
+    }
+
+    public static boolean setAuthCooldownSec(int sec) {
+        if (sec < 0 || sec > 86400) {
+            return false;
+        }
+        if (authCooldownSec == sec) {
+            return true;
+        }
+        authCooldownSec = sec;
+        save();
+        return true;
+    }
+
+    public static List<String> getAuthBlacklist() {
+        return Collections.unmodifiableList(new ArrayList<>(authBlacklist));
+    }
+
+    public static String getAuthBlacklistText() {
+        return String.join("\n", authBlacklist);
+    }
+
+    public static boolean isAuthBlacklisted(String host) {
+        String h = normalizeHost(host);
+        return !h.isEmpty() && authBlacklist.contains(h);
+    }
+
+    public static void addAuthBlacklist(String host) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || !authBlacklist.add(h)) {
+            return;
+        }
+        save();
+    }
+
+    public static void removeAuthBlacklist(String host) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || !authBlacklist.remove(h)) {
+            return;
+        }
+        save();
+    }
+
+    /** 用多行/逗号文本整体替换黑名单。 */
+    public static void setAuthBlacklistText(String text) {
+        LinkedHashSet<String> next = new LinkedHashSet<>(parseBlacklist(text == null ? "" : text));
+        if (next.equals(authBlacklist)) {
+            return;
+        }
+        authBlacklist.clear();
+        authBlacklist.addAll(next);
+        save();
+    }
+
+    private static int parseMaxClients(String raw) {
+        return parseBoundedInt(raw, 7, 1, 64);
+    }
+
+    private static int parseBoundedInt(String raw, int fallback, int min, int max) {
+        try {
+            int n = Integer.parseInt(raw.trim());
+            if (n >= min && n <= max) {
+                return n;
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private static List<String> parseBlacklist(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(raw.split("[,;\\s]+"))
+                .map(UserConfig::normalizeHost)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private static String normalizeHost(String host) {
+        if (host == null) {
+            return "";
+        }
+        String h = host.trim();
+        if (h.startsWith("[") && h.endsWith("]") && h.length() > 2) {
+            h = h.substring(1, h.length() - 1);
+        }
+        return h.toLowerCase(Locale.ROOT);
     }
 
     public static String getClientHost() {

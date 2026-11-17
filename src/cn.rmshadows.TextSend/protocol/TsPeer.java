@@ -35,6 +35,16 @@ import java.util.function.Consumer;
 public final class TsPeer implements Runnable {
     private static final SecureRandom RNG = new SecureRandom();
 
+    private static final java.util.Map<Socket, byte[]> PRIMED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /** accept 时先看过的几个字节，握手还要读回去。 */
+    public static void prime(Socket socket, byte[] prefix) {
+        if (socket != null && prefix != null && prefix.length > 0) {
+            PRIMED.put(socket, prefix);
+        }
+    }
+
     private final Socket socket;
     private final boolean asServer;
     private final PairingMaterial serverMaterial;
@@ -50,6 +60,8 @@ public final class TsPeer implements Runnable {
     private String sessionId;
     private volatile boolean handshakeOk;
     private volatile boolean authBadKey;
+    private byte[] pendingGrantPsk;
+    private String pendingGrantHost;
     private volatile boolean peerHasFile;
     private volatile FileIoCallback fileIo;
     private final Object ackLock = new Object();
@@ -129,7 +141,10 @@ public final class TsPeer implements Runnable {
         try {
             socket.setTcpNoDelay(true);
             socket.setSoTimeout(Protocol.HANDSHAKE_TIMEOUT_MS);
-            in = socket.getInputStream();
+            byte[] primed = PRIMED.remove(socket);
+            InputStream rawIn = socket.getInputStream();
+            in = primed == null ? rawIn
+                    : new java.io.SequenceInputStream(new java.io.ByteArrayInputStream(primed), rawIn);
             out = socket.getOutputStream();
             if (asServer) {
                 handshakeServer();
@@ -209,14 +224,23 @@ public final class TsPeer implements Runnable {
             status("【握手】ECDH 完成，HKDF-SHA256  info=\"" + info + "\"  派生 aesKey(不打印)");
             aesKey = Hkdf.derive(shared, salt, info, Protocol.PSK_LEN);
         } else if ("psk".equals(mode)) {
-            status("【握手】PSK 模式：扫码长密钥，HKDF-SHA256  info=\"" + Protocol.HKDF_INFO_PSK + "\"");
+            String hostOnly = remoteHost();
+            byte[] grantPsk = TsServer.peekLanGrantPsk(hostOnly);
+            byte[] psk = grantPsk != null ? grantPsk : serverMaterial.psk;
+            status("【握手】PSK 模式：" + (grantPsk != null ? "局域网临时授权" : "扫码长密钥")
+                    + "，HKDF-SHA256  info=\"" + Protocol.HKDF_INFO_PSK + "\"");
             serverKx.addProperty("nonce", B64.enc(serverNonce));
             writePlain(Protocol.TYPE_KEY_EXCHANGE, serverKx.toString());
             status("【握手】发送 KEY_EXCHANGE  nonce");
             byte[] clientNonce = B64.dec(clientKx.get("nonce").getAsString());
             byte[] salt = concat(serverNonce, clientNonce);
-            aesKey = Hkdf.derive(serverMaterial.psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
+            aesKey = Hkdf.derive(psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
             status("【握手】HKDF 派生 aesKey(不打印)");
+            // 先记下，AUTH_OK 成功后再消费，避免解密失败误废票
+            if (grantPsk != null) {
+                pendingGrantPsk = grantPsk;
+                pendingGrantHost = hostOnly;
+            }
         } else {
             throw new IOException("unsupported mode: " + mode);
         }
@@ -228,6 +252,11 @@ public final class TsPeer implements Runnable {
             throw new IOException("bad AUTH_OK role");
         }
         status("【握手】收到 AUTH_OK  对端已用同一把 aesKey");
+        if (pendingGrantHost != null && pendingGrantPsk != null) {
+            TsServer.consumeLanGrant(pendingGrantHost, pendingGrantPsk);
+            pendingGrantHost = null;
+            pendingGrantPsk = null;
+        }
 
         sessionId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         JsonObject ok = new JsonObject();
@@ -1204,12 +1233,24 @@ public final class TsPeer implements Runnable {
         }
     }
 
-    private String remoteAddr() {
+    public String remoteHost() {
         try {
-            return socket.getInetAddress().getHostAddress() + ":" + socket.getPort();
+            return socket.getInetAddress().getHostAddress();
         } catch (Exception e) {
             return "?";
         }
+    }
+
+    public int remotePort() {
+        try {
+            return socket.getPort();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String remoteAddr() {
+        return remoteHost() + ":" + remotePort();
     }
 
     private static String str(JsonObject o, String key) {
