@@ -79,7 +79,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.62";
+    public static final String VERSION = "5.0.63";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -254,7 +254,31 @@ public class TextSendMain {
     private static JPopupMenu connectedPopup;
     private static JPopupMenu authPendingPopup;
     private static JPopupMenu sessionPopup;
+    private static final List<SessionTarget> sessionTargets = new ArrayList<>();
+    private static int sessionCursor;
+    private static KeyEventDispatcher sessionKeys;
+    /** 关掉列表后，紧接着的那下字母不要进输入框。 */
+    private static char sessionSwallowTyped;
+
+    /** 「在线」列表里的一台。快捷键作用在蓝框标出的那台。 */
+    private static final class SessionTarget {
+        final boolean pending;
+        final String host;
+        final JPanel row;
+
+        SessionTarget(boolean pending, String host, JPanel row) {
+            this.pending = pending;
+            this.host = host;
+            this.row = row;
+        }
+    }
     private static String lanPeerSig = "";
+    /** 客户端等待允许时，设备列表上常驻显示的核对码（按 host）。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> authSasByHost =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 正在等授权的地址。再点同一台取消，含请求还没发出去的那一下。 */
+    private static volatile String authWaitHost;
+    private static volatile boolean authCancelEarly;
     private static String connectedSig = "";
     private static String authPendingSig = "";
     private static Timer lanPeerTimer;
@@ -267,6 +291,7 @@ public class TextSendMain {
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentLinkedDeque<Long>> authHitsByHost =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** 拒绝时刻。剩余时间 = 这个时刻 + 当前冷却设置，改短马上生效。 */
     private static final java.util.concurrent.ConcurrentHashMap<String, Long> authCooldownUntil =
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final int AUTH_PENDING_MAX = 16;
@@ -274,10 +299,16 @@ public class TextSendMain {
     private static final class PendingAuth {
         final LanAuth.Request req;
         final long at;
+        final java.security.KeyPair serverKp;
+        final byte[] serverPub;
+        final String sas;
 
-        PendingAuth(LanAuth.Request req, long at) {
+        PendingAuth(LanAuth.Request req, long at, java.security.KeyPair serverKp, byte[] serverPub, String sas) {
             this.req = req;
             this.at = at;
+            this.serverKp = serverKp;
+            this.serverPub = serverPub;
+            this.sas = sas == null ? "" : sas;
         }
     }
     /** 仅程序首次启动时尝试自动开服，切换角色/小窗重建不再触发 */
@@ -2082,6 +2113,234 @@ public class TextSendMain {
         return String.format(java.util.Locale.ROOT, "%.1f MB/s", bps / (1024.0 * 1024.0));
     }
 
+    /**
+     * 授权黑名单：固定约 5 行高度的列表 + 通栏条目（左 IP、右 ×）+ 回车添加。
+     */
+    private static final class AuthBlacklistEditor {
+        final JPanel root = new JPanel();
+        private final StretchWidthPanel rows = new StretchWidthPanel();
+        private final JTextField field = new JTextField();
+        private final java.util.LinkedHashSet<String> items = new java.util.LinkedHashSet<>();
+        private String editing;
+        private final int rowH = UserConfig.s(28);
+        private final Color line = new Color(0x9A9A9A);
+        private final Color rowLine = new Color(0xD0D0D0);
+
+        AuthBlacklistEditor(java.util.Collection<String> initial) {
+            root.setLayout(new BorderLayout(0, UserConfig.s(6)));
+            root.setOpaque(false);
+            root.setAlignmentX(Component.LEFT_ALIGNMENT);
+            int listH = rowH * 5 + UserConfig.s(2);
+            Dimension listSize = new Dimension(UserConfig.s(380), listH);
+
+            rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
+            rows.setOpaque(true);
+            rows.setBackground(Color.WHITE);
+            if (initial != null) {
+                for (String h : initial) {
+                    if (h != null && !h.isBlank()) {
+                        items.add(h.trim().toLowerCase(java.util.Locale.ROOT));
+                    }
+                }
+            }
+
+            JScrollPane scroll = new JScrollPane(rows);
+            scroll.setBorder(BorderFactory.createLineBorder(line));
+            scroll.getViewport().setBackground(Color.WHITE);
+            scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+            scroll.getVerticalScrollBar().setUnitIncrement(rowH);
+            scroll.setPreferredSize(listSize);
+            scroll.setMinimumSize(listSize);
+            scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, listH));
+
+            field.setPreferredSize(new Dimension(UserConfig.s(380), rowH));
+            field.setMaximumSize(new Dimension(Integer.MAX_VALUE, rowH));
+            field.setBackground(Color.WHITE);
+            field.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(line),
+                    new EmptyBorder(UserConfig.s(3), UserConfig.s(8), UserConfig.s(3), UserConfig.s(8))));
+            field.setToolTipText("输入 IPv4/IPv6 后回车添加；点上面条目可改，再回车确认。");
+            field.putClientProperty("JTextField.placeholderText", "输入 IP，回车添加");
+            field.addActionListener(e -> commitField());
+            field.addKeyListener(new java.awt.event.KeyAdapter() {
+                @Override
+                public void keyPressed(java.awt.event.KeyEvent e) {
+                    if (e.getKeyCode() == java.awt.event.KeyEvent.VK_ESCAPE) {
+                        cancelEdit();
+                    }
+                }
+            });
+
+            JLabel tip = new JLabel("点条目编辑，右侧 × 整条删除");
+            tip.setForeground(MUTED);
+            tip.setFont(tip.getFont().deriveFont((float) UserConfig.s(11)));
+
+            JPanel south = new JPanel();
+            south.setLayout(new BoxLayout(south, BoxLayout.Y_AXIS));
+            south.setOpaque(false);
+            field.setAlignmentX(Component.LEFT_ALIGNMENT);
+            tip.setAlignmentX(Component.LEFT_ALIGNMENT);
+            south.add(field);
+            south.add(Box.createVerticalStrut(UserConfig.s(3)));
+            south.add(tip);
+
+            root.add(scroll, BorderLayout.CENTER);
+            root.add(south, BorderLayout.SOUTH);
+            root.setPreferredSize(new Dimension(UserConfig.s(380), listH + rowH + UserConfig.s(28)));
+            root.setMaximumSize(new Dimension(Integer.MAX_VALUE, listH + rowH + UserConfig.s(36)));
+            rebuild();
+        }
+
+        void clear() {
+            items.clear();
+            editing = null;
+            field.setText("");
+            rebuild();
+        }
+
+        String text() {
+            return String.join("\n", items);
+        }
+
+        void commitField() {
+            String raw = field.getText() == null ? "" : field.getText().trim();
+            if (raw.isEmpty()) {
+                cancelEdit();
+                return;
+            }
+            String next = raw;
+            if (next.startsWith("[") && next.endsWith("]") && next.length() > 2) {
+                next = next.substring(1, next.length() - 1);
+            }
+            if (next.length() > 7 && next.regionMatches(true, 0, "::ffff:", 0, 7)) {
+                next = next.substring(7);
+            }
+            next = next.toLowerCase(java.util.Locale.ROOT);
+            if (editing != null) {
+                items.remove(editing);
+                editing = null;
+            }
+            items.add(next);
+            field.setText("");
+            rebuild();
+        }
+
+        private void cancelEdit() {
+            editing = null;
+            field.setText("");
+            rebuild();
+        }
+
+        private void startEdit(String host) {
+            editing = host;
+            field.setText(host);
+            field.requestFocusInWindow();
+            field.selectAll();
+            rebuild();
+        }
+
+        private void remove(String host) {
+            items.remove(host);
+            if (host.equals(editing)) {
+                editing = null;
+                field.setText("");
+            }
+            rebuild();
+        }
+
+        private void rebuild() {
+            rows.removeAll();
+            boolean any = false;
+            for (String host : items) {
+                if (host.equals(editing)) {
+                    continue;
+                }
+                any = true;
+                rows.add(makeRow(host));
+            }
+            if (!any) {
+                JLabel empty = new JLabel("  （空）");
+                empty.setForeground(MUTED);
+                empty.setPreferredSize(new Dimension(UserConfig.s(360), rowH));
+                empty.setMaximumSize(new Dimension(Integer.MAX_VALUE, rowH));
+                empty.setAlignmentX(Component.LEFT_ALIGNMENT);
+                rows.add(empty);
+            }
+            rows.revalidate();
+            rows.repaint();
+            root.revalidate();
+            root.repaint();
+        }
+
+        private JPanel makeRow(String host) {
+            JPanel row = new JPanel(new BorderLayout());
+            row.setOpaque(true);
+            row.setBackground(Color.WHITE);
+            row.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, rowLine));
+            row.setAlignmentX(Component.LEFT_ALIGNMENT);
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, rowH));
+            row.setPreferredSize(new Dimension(UserConfig.s(360), rowH));
+            row.setMinimumSize(new Dimension(UserConfig.s(120), rowH));
+
+            JLabel ipLab = new JLabel(host);
+            ipLab.setBorder(new EmptyBorder(0, UserConfig.s(8), 0, UserConfig.s(4)));
+            ipLab.setFont(ipLab.getFont().deriveFont(Font.PLAIN, (float) UserConfig.s(12)));
+            ipLab.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            ipLab.setToolTipText("点击编辑");
+            ipLab.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    startEdit(host);
+                }
+            });
+
+            JLabel del = new JLabel("×", SwingConstants.CENTER);
+            del.setPreferredSize(new Dimension(UserConfig.s(36), rowH));
+            del.setFont(del.getFont().deriveFont(Font.PLAIN, (float) UserConfig.s(16)));
+            del.setForeground(new Color(0x555555));
+            del.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            del.setToolTipText("删除这条");
+            del.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    remove(host);
+                }
+            });
+
+            row.add(ipLab, BorderLayout.CENTER);
+            row.add(del, BorderLayout.EAST);
+            return row;
+        }
+    }
+
+    /** JScrollPane 内列表拉满视口宽度。 */
+    private static final class StretchWidthPanel extends JPanel implements Scrollable {
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) {
+            return UserConfig.s(28);
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return Math.max(UserConfig.s(56), visible.height - UserConfig.s(16));
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
+
     private static void showSettings() {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
@@ -2147,21 +2406,17 @@ public class TextSendMain {
         coolRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         coolRow.add(new JLabel("拒绝后冷却（秒）"));
         JTextField fieldAuthCool = new JTextField(String.valueOf(UserConfig.getAuthCooldownSec()), 5);
-        fieldAuthCool.setToolTipText("点「拒绝」后该 IP 冷却期内静默拒绝。0=不冷却，最大 86400，默认 120。");
+        fieldAuthCool.setToolTipText("点「拒绝」后该 IP 冷却期内静默拒绝。0=不冷却，最大 86400，默认 10。改短对已经在冷却的地址立刻生效。");
         sizeDigitField(fieldAuthCool, 5);
         coolRow.add(fieldAuthCool);
 
-        JLabel blTitle = new JLabel("授权黑名单（每行一个 IP）");
+        JLabel blTitle = new JLabel("授权黑名单");
         blTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
-        JTextArea areaBlacklist = new JTextArea(UserConfig.getAuthBlacklistText(), 4, 28);
-        areaBlacklist.setLineWrap(false);
-        areaBlacklist.setToolTipText("名单内 IP 的授权请求一律静默拒绝。也可在待授权列表点「拉黑」。");
-        JScrollPane blScroll = new JScrollPane(areaBlacklist);
-        blScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
-        blScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(96)));
+        AuthBlacklistEditor blacklistEditor = new AuthBlacklistEditor(UserConfig.getAuthBlacklist());
+        blacklistEditor.root.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel hint = new JLabel("<html><body style='width:360px'>平时请扫码。打开探测后：客户端点设备会进「待授权」列表，"
-                + "点开后允许才发一次性密钥。限流/冷却/黑名单防骚扰。默认「探测端口跟随连接端口」，"
+                + "点开后两边显示同一串核对码，对得上再允许。限流/冷却/黑名单防骚扰。默认「探测端口跟随连接端口」，"
                 + "两边都是主界面那个口（连接 TCP，探测 UDP）。防火墙若只放行 TCP，还要放行同号 UDP。</body></html>");
         hint.setForeground(MUTED);
         hint.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -2200,7 +2455,7 @@ public class TextSendMain {
         panel.add(Box.createVerticalStrut(UserConfig.s(6)));
         panel.add(blTitle);
         panel.add(Box.createVerticalStrut(UserConfig.s(4)));
-        panel.add(blScroll);
+        panel.add(blacklistEditor.root);
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
         panel.add(hint);
         panel.add(Box.createVerticalStrut(UserConfig.s(10)));
@@ -2233,8 +2488,8 @@ public class TextSendMain {
             fieldMaxClients.setText("7");
             qrFocusClose.setSelected(false);
             fieldAuthRate.setText("3");
-            fieldAuthCool.setText("120");
-            areaBlacklist.setText("");
+            fieldAuthCool.setText("10");
+            blacklistEditor.clear();
             restored[0] = true;
         });
         panel.add(resetDefaults);
@@ -2298,7 +2553,8 @@ public class TextSendMain {
             flashStatus("冷却秒数须为 0–86400");
             return;
         }
-        UserConfig.setAuthBlacklistText(areaBlacklist.getText());
+        blacklistEditor.commitField();
+        UserConfig.setAuthBlacklistText(blacklistEditor.text());
         UserConfig.setQrCloseOnFocusLost(qrFocusClose.isSelected());
         UserConfig.setLanDiscoverAnnounce(announce.isSelected());
         UserConfig.setLanDiscoverPause(pause.isSelected());
@@ -2378,36 +2634,78 @@ public class TextSendMain {
             return;
         }
         long now = System.currentTimeMillis();
-        Long until = authCooldownUntil.get(host);
-        if (until != null && until > now) {
-            long left = Math.max(1L, (until - now + 999) / 1000);
-            denyAuthSilent(req, (int) Math.min(LanAuth.DENY_HARD - 1, left));
+        int left = authCooldownLeftSec(host, now);
+        if (left > 0) {
+            denyAuthSilent(req, left);
             SwingUtilities.invokeLater(() -> flashStatus("授权冷却中（约 " + left + " 秒），未弹出"));
             return;
         }
         if (!noteAuthHit(host, now)) {
-            Long again = authCooldownUntil.get(host);
-            long left = again == null ? 0L : Math.max(0L, (again - now + 999) / 1000);
-            denyAuthSilent(req, left <= 0 ? 0 : (int) Math.min(LanAuth.DENY_HARD - 1, left));
+            int again = authCooldownLeftSec(host, System.currentTimeMillis());
+            denyAuthSilent(req, again);
             SwingUtilities.invokeLater(() -> flashStatus("授权请求过频，已冷却，未弹出"));
             return;
         }
+        if (req.clientPub == null || req.clientPub.length != LanAuth.PUB_LEN) {
+            denyAuthSilent(req, 0);
+            SwingUtilities.invokeLater(() -> flashStatus("对方版本过旧，没有交换公钥"));
+            return;
+        }
+        java.security.KeyPair serverKp;
+        byte[] serverPub;
+        String sas;
+        try {
+            serverKp = protocol.EcdhP256.generate();
+            serverPub = protocol.EcdhP256.encodePublic(
+                    (java.security.interfaces.ECPublicKey) serverKp.getPublic());
+            sas = LanAuth.sasCode(req.clientPub, serverPub, req.nonce);
+        } catch (Exception e) {
+            denyAuthSilent(req, 0);
+            SwingUtilities.invokeLater(() -> flashStatus("授权密钥协商失败"));
+            return;
+        }
+        byte[] pendingPkt = LanAuth.encodePending(req.nonce, serverPub);
         boolean firstSlot = !authPendingByHost.containsKey(host) && authPendingByHost.isEmpty();
-        PendingAuth prev = authPendingByHost.put(host, new PendingAuth(req, now));
+        PendingAuth prev = authPendingByHost.put(host, new PendingAuth(req, now, serverKp, serverPub, sas));
         if (prev != null && prev.req != null && !java.util.Arrays.equals(prev.req.nonce, req.nonce)) {
             denyAuthSilent(prev.req, 0);
         }
         trimAuthPendingOverflow();
-        if (req.tcpReply == null) {
-            LanDiscover.sendAuthPacket(req.host, req.replyPort, LanAuth.encodePending(req.nonce));
+        if (req.tcpReply != null) {
+            req.earlyPending = pendingPkt;
+        } else {
+            LanDiscover.sendAuthPacket(req.host, req.replyPort, pendingPkt);
         }
+        String sasShown = sas;
         SwingUtilities.invokeLater(() -> {
             refreshAuthPending();
             if (firstSlot || prev == null) {
-                flashStatus("有授权请求");
+                flashStatus(sasShown.isEmpty() ? "有授权请求" : "有授权请求，核对 " + sasShown);
                 showSessionPopup();
             }
         });
+    }
+
+    /** 客户端取消申请。丢掉待授权，不拒绝、不计冷却。 */
+    public static void onLanAuthCancel(LanAuth.Request req) {
+        if (req == null) {
+            return;
+        }
+        onLanAuthCancel(req.host, req.nonce);
+    }
+
+    public static void onLanAuthCancel(String host, byte[] nonce) {
+        String key = authHostKey(host);
+        PendingAuth pending = authPendingByHost.get(key);
+        if (pending == null || pending.req == null || nonce == null
+                || !java.util.Arrays.equals(pending.req.nonce, nonce)) {
+            return;
+        }
+        if (authPendingByHost.remove(key, pending) && pending.req.tcpReply != null
+                && !pending.req.tcpReply.isDone()) {
+            pending.req.tcpReply.completeExceptionally(new LanAuth.AuthCancelledException());
+        }
+        SwingUtilities.invokeLater(TextSendMain::refreshAuthPending);
     }
 
     /** @return false 表示超限，应静默拒绝 */
@@ -2484,9 +2782,30 @@ public class TextSendMain {
         if (cool <= 0 || key.isEmpty()) {
             return;
         }
-        authCooldownUntil.put(key, System.currentTimeMillis() + cool * 1000L);
+        authCooldownUntil.put(key, System.currentTimeMillis());
         // 冷却代替滑动窗口。结束后可以再请求，不会和剩余次数叠成一直拒绝。
         authHitsByHost.remove(key);
+    }
+
+    /** 剩余秒。0 表示不在冷却。用拒绝时刻加当前设置，把 120 改成 10 会立刻缩短。 */
+    private static int authCooldownLeftSec(String host, long now) {
+        String key = authHostKey(host);
+        Long started = authCooldownUntil.get(key);
+        if (started == null) {
+            return 0;
+        }
+        int cool = UserConfig.getAuthCooldownSec();
+        if (cool <= 0) {
+            authCooldownUntil.remove(key);
+            return 0;
+        }
+        long until = started + cool * 1000L;
+        if (until <= now) {
+            authCooldownUntil.remove(key);
+            return 0;
+        }
+        long left = (until - now + 999) / 1000;
+        return (int) Math.min(LanAuth.DENY_HARD - 1, Math.max(1L, left));
     }
 
     private static void clearAuthPending(boolean denyAll) {
@@ -2580,12 +2899,23 @@ public class TextSendMain {
         LanAuth.Request req = pending.req;
         String name = req.name == null || req.name.isBlank() ? "未知设备" : req.name;
         if (allow && isServerRunning() && UserConfig.isLanDiscover() && !UserConfig.isAuthBlacklisted(host)) {
-            authCooldownUntil.remove(host);
-            byte[] psk = LanAuth.newPsk();
-            long exp = System.currentTimeMillis() + LanAuth.GRANT_TTL_MS;
-            TsServer.putLanGrantCurrent(req.host, psk, LanAuth.GRANT_TTL_MS, name);
-            replyAuth(req, LanAuth.encodeGrant(req.nonce, psk, getServerListenPort(), exp));
-            flashStatus("已允许 " + name);
+            if (req.clientPub == null || req.clientPub.length != LanAuth.PUB_LEN
+                    || pending.serverKp == null || pending.serverPub == null) {
+                denyAuthSilent(req, 0);
+                flashStatus("对方版本过旧，没有交换公钥");
+            } else {
+                try {
+                    byte[] psk = LanAuth.deriveGrantPsk(pending.serverKp, req.clientPub, req.nonce);
+                    authCooldownUntil.remove(host);
+                    long exp = System.currentTimeMillis() + LanAuth.GRANT_TTL_MS;
+                    TsServer.putLanGrantCurrent(req.host, psk, LanAuth.GRANT_TTL_MS, name);
+                    replyAuth(req, LanAuth.encodeGrant(req.nonce, pending.serverPub, getServerListenPort(), exp));
+                    flashStatus(pending.sas.isEmpty() ? "已允许 " + name : "已允许 " + name + "（" + pending.sas + "）");
+                } catch (Exception ex) {
+                    denyAuthSilent(req, 0);
+                    flashStatus("授权密钥协商失败");
+                }
+            }
         } else {
             TsServer.revokeLanGrantCurrent(req.host);
             if (blacklist) {
@@ -2654,6 +2984,8 @@ public class TextSendMain {
         pending.sort((a, b) -> Long.compare(a.at, b.at));
         List<TsServer.AliveClient> clients = TsServer.listAliveClientsCurrent();
 
+        hideSessionPopup();
+        sessionCursor = 0;
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(new EmptyBorder(UserConfig.s(8), UserConfig.s(10), UserConfig.s(8), UserConfig.s(10)));
@@ -2671,13 +3003,22 @@ public class TextSendMain {
         for (PendingAuth item : pending) {
             LanAuth.Request req = item.req;
             String name = req.name == null || req.name.isBlank() ? "未知设备" : req.name;
-            panel.add(sessionRow(name + "  ·  " + req.host,
-                    new String[]{"接受", "拒绝", "拉黑"},
+            String label = name + "  ·  " + req.host
+                    + (item.sas.isEmpty() ? "" : "  ·  核对 " + item.sas);
+            JPanel row = sessionRow(label,
+                    new String[]{"允许  Alt+Y", "拒绝  Alt+N", "拉黑  Alt+B"},
+                    new String[]{
+                            "核对码与对方一致后再允许（Alt+Y）。单独按 Y 不会同意",
+                            "拒绝并开始冷却，不拉黑（Alt+N）",
+                            "拉黑这个地址（Alt+B）"
+                    },
                     new Runnable[]{
                             () -> decideAuth(req.host, true, false),
                             () -> decideAuth(req.host, false, false),
                             () -> decideAuth(req.host, false, true)
-                    }));
+                    });
+            sessionTargets.add(new SessionTarget(true, req.host, row));
+            panel.add(row);
         }
 
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
@@ -2698,8 +3039,12 @@ public class TextSendMain {
                 label = LanDiscover.deviceName() + "  ·  " + c.host;
             }
             String host = c.host;
-            panel.add(sessionRow(label,
-                    new String[]{"踢出", "拉黑"},
+            JPanel row = sessionRow(label,
+                    new String[]{"踢出  Alt+K", "拉黑  Alt+B"},
+                    new String[]{
+                            "断开这台，不拉黑（Alt+K）",
+                            "拉黑并踢下线（Alt+B）"
+                    },
                     new Runnable[]{
                             () -> {
                                 TsServer.kickHostCurrent(host);
@@ -2712,18 +3057,170 @@ public class TextSendMain {
                                 flashStatus("已拉黑并踢下线 " + host);
                                 refreshConnectedClients();
                             }
-                    }));
+                    });
+            sessionTargets.add(new SessionTarget(false, host, row));
+            panel.add(row);
         }
 
-        hideSessionPopup();
+        panel.add(Box.createVerticalStrut(UserConfig.s(8)));
+        JLabel keys = new JLabel("Alt+Y 允许 · Alt+N 拒绝 · Alt+B 拉黑 · Alt+K 踢下线 · ↑↓ 换一台");
+        keys.setForeground(MUTED);
+        keys.setFont(keys.getFont().deriveFont((float) UserConfig.s(11)));
+        keys.setAlignmentX(Component.LEFT_ALIGNMENT);
+        keys.setToolTipText("必须按住 Alt。待授权先对核对码再允许。单独按字母会照常进输入框。");
+        panel.add(keys);
+        paintSessionCursor();
+
         JPopupMenu pop = new JPopupMenu();
         sessionPopup = pop;
         pop.setBorder(BorderFactory.createLineBorder(BORDER));
         pop.add(panel);
+        installSessionKeys();
         pop.show(buttonClients, 0, buttonClients.getHeight());
     }
 
-    private static JPanel sessionRow(String label, String[] actions, Runnable[] runs) {
+    private static void installSessionKeys() {
+        removeSessionKeys();
+        sessionKeys = e -> {
+            if (e.getID() == KeyEvent.KEY_TYPED && sessionSwallowTyped != 0
+                    && Character.toLowerCase(e.getKeyChar()) == sessionSwallowTyped) {
+                sessionSwallowTyped = 0;
+                if (sessionPopup == null || !sessionPopup.isVisible()) {
+                    removeSessionKeys();
+                }
+                return true;
+            }
+            if (sessionPopup == null || !sessionPopup.isVisible()) {
+                return false;
+            }
+            Window popWin = SwingUtilities.getWindowAncestor(sessionPopup);
+            boolean here = (popWin != null && popWin.isFocused())
+                    || (frame != null && frame.isFocused());
+            if (!here) {
+                return false;
+            }
+            if (e.isControlDown() || e.isMetaDown()) {
+                return false;
+            }
+            if (e.getID() == KeyEvent.KEY_TYPED) {
+                return false;
+            }
+            if (e.getID() != KeyEvent.KEY_PRESSED) {
+                return false;
+            }
+            int vk = e.getKeyCode();
+            if (vk == KeyEvent.VK_UP || vk == KeyEvent.VK_DOWN) {
+                moveSessionCursor(vk == KeyEvent.VK_UP ? -1 : 1);
+                return true;
+            }
+            if (vk == KeyEvent.VK_ESCAPE) {
+                hideSessionPopup();
+                return true;
+            }
+            // 裸字母留给输入框。弹出列表时正在打字，按 Y 不能当成同意。
+            if (!e.isAltDown()) {
+                return false;
+            }
+            if (vk == KeyEvent.VK_Y) {
+                sessionSwallowTyped = 'y';
+                runSessionKey("allow");
+                return true;
+            }
+            if (vk == KeyEvent.VK_N) {
+                sessionSwallowTyped = 'n';
+                runSessionKey("deny");
+                return true;
+            }
+            if (vk == KeyEvent.VK_B) {
+                sessionSwallowTyped = 'b';
+                runSessionKey("block");
+                return true;
+            }
+            if (vk == KeyEvent.VK_K) {
+                sessionSwallowTyped = 'k';
+                runSessionKey("kick");
+                return true;
+            }
+            return false;
+        };
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(sessionKeys);
+    }
+
+    private static void removeSessionKeys() {
+        if (sessionKeys != null) {
+            KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(sessionKeys);
+            sessionKeys = null;
+        }
+    }
+
+    private static void moveSessionCursor(int delta) {
+        if (sessionTargets.isEmpty()) {
+            return;
+        }
+        int n = sessionTargets.size();
+        sessionCursor = (sessionCursor + delta + n) % n;
+        paintSessionCursor();
+    }
+
+    private static void paintSessionCursor() {
+        for (int i = 0; i < sessionTargets.size(); i++) {
+            JPanel row = sessionTargets.get(i).row;
+            boolean on = i == sessionCursor;
+            row.setOpaque(true);
+            row.setBackground(on ? new Color(0xE7EEFF) : CARD);
+            row.setBorder(BorderFactory.createLineBorder(on ? ACCENT : BORDER));
+        }
+        if (sessionPopup != null) {
+            sessionPopup.repaint();
+        }
+    }
+
+    private static void runSessionKey(String action) {
+        if (sessionTargets.isEmpty()) {
+            flashStatus("没有可操作的设备");
+            return;
+        }
+        int i = Math.max(0, Math.min(sessionCursor, sessionTargets.size() - 1));
+        SessionTarget t = sessionTargets.get(i);
+        String host = t.host;
+        boolean pending = t.pending;
+        switch (action) {
+            case "allow", "deny" -> {
+                if (!pending) {
+                    flashStatus("先用上下键选中待授权的设备");
+                    return;
+                }
+                hideSessionPopup();
+                decideAuth(host, "allow".equals(action), false);
+            }
+            case "block" -> {
+                hideSessionPopup();
+                if (pending) {
+                    decideAuth(host, false, true);
+                } else {
+                    UserConfig.addAuthBlacklist(host);
+                    TsServer.kickHostCurrent(host);
+                    flashStatus("已拉黑并踢下线 " + host);
+                    refreshConnectedClients();
+                }
+            }
+            case "kick" -> {
+                if (pending) {
+                    flashStatus("待授权用 N 拒绝，K 是踢下线");
+                    return;
+                }
+                hideSessionPopup();
+                TsServer.kickHostCurrent(host);
+                flashStatus("已踢下线 " + host);
+                refreshConnectedClients();
+            }
+            default -> {
+            }
+        }
+        updateClientsButton();
+    }
+
+    private static JPanel sessionRow(String label, String[] actions, String[] tips, Runnable[] runs) {
         JPanel row = new JPanel(new BorderLayout(UserConfig.s(8), 0));
         row.setOpaque(false);
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -2735,6 +3232,8 @@ public class TextSendMain {
         for (int i = 0; i < actions.length; i++) {
             JButton b = new JButton(actions[i]);
             b.setFont(b.getFont().deriveFont((float) UserConfig.s(11)));
+            b.setToolTipText(tips[i]);
+            b.setFocusable(false);
             int idx = i;
             b.addActionListener(e -> {
                 hideSessionPopup();
@@ -2749,9 +3248,20 @@ public class TextSendMain {
     }
 
     private static void hideSessionPopup() {
+        sessionTargets.clear();
         if (sessionPopup != null) {
             sessionPopup.setVisible(false);
             sessionPopup = null;
+        }
+        if (sessionSwallowTyped == 0) {
+            removeSessionKeys();
+        } else {
+            SwingUtilities.invokeLater(() -> {
+                sessionSwallowTyped = 0;
+                if (sessionPopup == null) {
+                    removeSessionKeys();
+                }
+            });
         }
     }
 
@@ -2775,7 +3285,9 @@ public class TextSendMain {
         StringBuilder sig = new StringBuilder();
         sig.append(on).append('|').append(paused).append('|').append(bindError).append('|').append(probing);
         for (LanDiscover.Peer peer : peers) {
-            sig.append('|').append(peer.name).append('\u0000').append(peer.host).append(':').append(peer.tcpPort);
+            String sas = authSasByHost.getOrDefault(authHostKey(peer.host), "");
+            sig.append('|').append(peer.name).append('\u0000').append(peer.host).append(':')
+                    .append(peer.tcpPort).append('\u0000').append(sas);
         }
         String next = sig.toString();
         if (next.equals(lanPeerSig) && box.isVisible() == on) {
@@ -2825,12 +3337,24 @@ public class TextSendMain {
                         && idCounts.getOrDefault(peer.idKey, 0) > 1) {
                     label += "  （可能是同一设备）";
                 }
-                JButton btn = new JButton(label);
+                String sas = authSasByHost.getOrDefault(authHostKey(peer.host), "");
+                JButton btn;
+                if (!sas.isEmpty()) {
+                    btn = new JButton("<html>" + htmlEsc(label)
+                            + "<br><span style='font-size:" + Math.max(10, UserConfig.s(11))
+                            + "pt;color:#555'>核对 " + htmlEsc(sas)
+                            + " · 再点取消</span></html>");
+                } else {
+                    btn = new JButton(label);
+                }
                 btn.setAlignmentX(Component.LEFT_ALIGNMENT);
                 btn.setFont(btn.getFont().deriveFont((float) UserConfig.s(12)));
-                btn.setToolTipText(idCounts.getOrDefault(peer.idKey, 0) > 1
+                btn.setHorizontalAlignment(SwingConstants.LEFT);
+                btn.setToolTipText(!sas.isEmpty()
+                        ? "核对码 " + sas + "。再点这一台取消申请"
+                        : (idCounts.getOrDefault(peer.idKey, 0) > 1
                         ? "实例号相同，多半是同一进程的多网卡。点一下请求授权"
-                        : "点一下：向对方请求授权，对方允许后免 PIN 连接");
+                        : "点一下：向对方请求授权，对方允许后免 PIN 连接"));
                 btn.addActionListener(e -> applyDiscoveredPeer(peer.host, peer.tcpPort));
                 box.add(btn);
             }
@@ -2888,22 +3412,43 @@ public class TextSendMain {
             flashStatus("请先在设置里打开局域网探测");
             return;
         }
+        String hostKey = authHostKey(host);
+        if (LanAuth.isWaiting(host) || hostKey.equals(authWaitHost)) {
+            authCancelEarly = true;
+            LanAuth.cancelActive();
+            return;
+        }
+        authWaitHost = hostKey;
+        authCancelEarly = false;
         flashStatus("正在请求授权 " + host + "…");
         int udpPort = UserConfig.getLanDiscoverPort();
+        java.util.function.Consumer<String> onSas = code -> SwingUtilities.invokeLater(() -> {
+            if (code != null && !code.isBlank()) {
+                authSasByHost.put(hostKey, code.trim());
+                lanPeerSig = "";
+                refreshLanPeers();
+            }
+        });
         Thread t = new Thread(() -> {
             try {
+                if (authCancelEarly) {
+                    throw new LanAuth.AuthCancelledException();
+                }
                 LanAuth.Grant grant;
                 try {
-                    grant = LanDiscover.requestAuthTcp(host, tcpPort);
+                    grant = LanDiscover.requestAuthTcp(host, tcpPort, onSas);
                 } catch (Exception tcpErr) {
-                    if (LanAuth.isDenied(tcpErr)) {
+                    if (LanAuth.isDenied(tcpErr) || LanAuth.isCancelled(tcpErr)) {
                         throw tcpErr;
                     }
-                    grant = LanDiscover.requestAuth(host, udpPort);
+                    grant = LanDiscover.requestAuth(host, udpPort, onSas);
                 }
                 int port = grant.tcpPort > 0 ? grant.tcpPort : tcpPort;
                 String uri = TsUri.format(host, port, grant.pskB64());
                 SwingUtilities.invokeLater(() -> {
+                    authSasByHost.remove(hostKey);
+                    lanPeerSig = "";
+                    refreshLanPeers();
                     JTextArea area = miniMode && miniTextArea != null ? miniTextArea : areaMessage;
                     if (area != null) {
                         area.setText(uri);
@@ -2912,6 +3457,15 @@ public class TextSendMain {
                     startClient();
                 });
             } catch (Exception e) {
+                if (LanAuth.isCancelled(e)) {
+                    SwingUtilities.invokeLater(() -> {
+                        authSasByHost.remove(hostKey);
+                        lanPeerSig = "";
+                        refreshLanPeers();
+                        flashStatus("已取消授权申请");
+                    });
+                    return;
+                }
                 Throwable shown = e;
                 if (e instanceof java.util.concurrent.ExecutionException && e.getCause() != null) {
                     shown = e.getCause();
@@ -2922,11 +3476,27 @@ public class TextSendMain {
                     msg = "等待服务端允许超时";
                 }
                 String tip = msg;
-                SwingUtilities.invokeLater(() -> flashStatus(tip));
+                SwingUtilities.invokeLater(() -> {
+                    authSasByHost.remove(hostKey);
+                    lanPeerSig = "";
+                    refreshLanPeers();
+                    flashStatus(tip);
+                });
+            } finally {
+                if (hostKey.equals(authWaitHost)) {
+                    authWaitHost = null;
+                }
             }
         }, "ts-lan-auth");
         t.setDaemon(true);
         t.start();
+    }
+
+    private static String htmlEsc(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private static void flashStatus(String s) {
@@ -2950,6 +3520,20 @@ public class TextSendMain {
         String text = """
                 TextSend PC  ·  协议 v1  ·  %s
 
+                —— 按钮 ——
+                · 「启动」左键：最多 1 人，并打开二维码。中键：最多 N 人（设置里改，默认 7）。右键：最多 1 人，不弹二维码。再点是停止。
+                · 「发送」：有图片预览先发图；待发列表有选中则发这些文件；否则把输入框里的文字发出去。Ctrl+Enter 同样。
+                · 「文件」：左键选文件加入待发，右键用系统文件框。选中后还要点「发送」才传。
+                · 「取消」：停这一轮传输。待发列表还在；对面留下的半截，再发会续上。
+                · 「浏览」：往待发里加文件。Shift+浏览可选多个文件夹。
+                · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
+                · 「下载目录」：打开本机「下载/TextSend」。
+                · 「二维码」：手动打开连接二维码。Esc 关闭。
+                · 「在线」：待授权和已连接。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台。
+                · 「设置」：探测、限流、冷却、黑名单、人数上限。
+                · 「帮助」：本页。F1 同样。
+                · 「置顶小窗」：收成小窗；Esc 回到大窗。
+
                 —— 服务端 ——
                 · 选择网卡 IP 和端口，点「启动」。
                 · 启动后仍可换 IP，二维码和连接串会跟着变，不用停服务。
@@ -2965,8 +3549,8 @@ public class TextSendMain {
                 · 粘贴连接串 ts://IP/k... 后点「连接」。端口可省略，默认 54300。
                 · 可勾选「记住上次连接」：PIN 连成功后记住 IP、端口和 PIN（默认关，不记长密钥）。
                 · 「设置」里可开局域网探测（默认关）：客户端列出同一局域网开服的 TextSend。
-                · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，点开后「允许 / 拒绝 / 拉黑」。
-                · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 120 秒）、黑名单。
+                · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，两边显示同一串核对码，对得上再「允许 / 拒绝 / 拉黑」。打开列表时 Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台，作用在蓝框那台。单独按字母会进输入框，不会误同意。
+                · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 10 秒）、黑名单。
                 · 连接是 TCP，发现设备是 UDP（广播不能走 TCP）。默认「探测端口跟随连接端口」，两边同号。
                 · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行同号 UDP。「有连接时关闭探测」默认开。
                 · 服务端「已连接」列表可对某一客户端「踢下线」，无需重启服务。
@@ -3002,6 +3586,7 @@ public class TextSendMain {
                 · Ctrl+V：窗口聚焦即可粘贴到输入框（不必先点输入框）；图片进预览
                 · Esc：小窗回到大窗
                 · F1：帮助
+                · 「在线」列表打开时：Alt+Y 允许，Alt+N 拒绝，Alt+B 拉黑，Alt+K 踢下线；↑↓ 换一台。单独按字母不会操作。Esc 关闭列表
 
                 —— 缩放 ——
                 · 鼠标放在标题旁的百分比上，滚轮 ±1%%；按住 Ctrl 时 ±0.1%%。

@@ -1232,6 +1232,9 @@ public final class TsPeer implements Runnable {
             byte[] key = Hkdf.derive(g.psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
             try {
                 byte[] plain = AesGcm.open(key, f.payload);
+                if (!TsServer.claimLanGrantCurrent(g.host, g.psk)) {
+                    throw new IOException("授权已使用");
+                }
                 aesKey = key;
                 pendingGrantPsk = g.psk;
                 pendingGrantHost = g.host;

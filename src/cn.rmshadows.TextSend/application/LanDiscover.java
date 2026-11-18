@@ -270,6 +270,11 @@ public final class LanDiscover {
                 }
                 return;
             }
+            if (type == LanAuth.TYPE_CANCEL && LanAuth.isCancel(buf, len)) {
+                byte[] nonce = Arrays.copyOfRange(buf, 6, 6 + LanAuth.NONCE_LEN);
+                TextSendMain.onLanAuthCancel(host, nonce);
+                return;
+            }
             return;
         }
         Decoded decoded = decode(buf, len);
@@ -286,15 +291,25 @@ public final class LanDiscover {
 
     /** 供客户端发起临时授权；探测未开或 socket 未就绪时抛错。 */
     public static LanAuth.Grant requestAuth(String host, int udpPort) throws Exception {
+        return requestAuth(host, udpPort, null);
+    }
+
+    public static LanAuth.Grant requestAuth(String host, int udpPort, java.util.function.Consumer<String> onSas)
+            throws Exception {
         DatagramSocket sock = socket;
         if (sock == null || sock.isClosed()) {
             throw new IllegalStateException("请先打开局域网探测");
         }
-        return LanAuth.requestAuth(sock, host, udpPort, deviceName());
+        return LanAuth.requestAuth(sock, host, udpPort, deviceName(), onSas);
     }
 
     public static LanAuth.Grant requestAuthTcp(String host, int tcpPort) throws Exception {
-        return LanAuth.requestAuthTcp(host, tcpPort, deviceName());
+        return requestAuthTcp(host, tcpPort, null);
+    }
+
+    public static LanAuth.Grant requestAuthTcp(String host, int tcpPort, java.util.function.Consumer<String> onSas)
+            throws Exception {
+        return LanAuth.requestAuthTcp(host, tcpPort, deviceName(), onSas);
     }
 
     public static void sendAuthPacket(String host, int port, byte[] packet) {

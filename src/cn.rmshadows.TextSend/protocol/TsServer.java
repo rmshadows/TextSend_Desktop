@@ -155,6 +155,12 @@ public final class TsServer implements Runnable {
         }
     }
 
+    /** 同一张票只让一路握手拿走。第二次返回 false。 */
+    public static boolean claimLanGrantCurrent(String host, byte[] psk) {
+        TsServer s = instance;
+        return s != null && s.claimGrant(host, psk);
+    }
+
     public static int sendFileToAllCurrent(Path path, BooleanSupplier cancelled) throws Exception {
         return sendFileToAllCurrent(path, cancelled, null, null);
     }
@@ -320,15 +326,15 @@ public final class TsServer implements Runnable {
     private void finishAuthTcp(Socket sock, java.io.InputStream in) {
         try {
             byte[] meta = readN(in, 3);
-            if (meta[0] != 1 || meta[1] != application.LanAuth.TYPE_REQUEST) {
+            if (meta[0] != application.LanAuth.VERSION || meta[1] != application.LanAuth.TYPE_REQUEST) {
                 return;
             }
             int nameLen = meta[2] & 0xFF;
             if (nameLen > application.LanAuth.NAME_MAX) {
                 return;
             }
-            byte[] tail = readN(in, nameLen + application.LanAuth.NONCE_LEN);
-            byte[] full = new byte[7 + nameLen + application.LanAuth.NONCE_LEN];
+            byte[] tail = readN(in, nameLen + application.LanAuth.NONCE_LEN + application.LanAuth.PUB_LEN);
+            byte[] full = new byte[7 + nameLen + application.LanAuth.NONCE_LEN + application.LanAuth.PUB_LEN];
             full[0] = 'T';
             full[1] = 'S';
             full[2] = 'A';
@@ -343,11 +349,15 @@ public final class TsServer implements Runnable {
             }
             java.util.concurrent.CompletableFuture<byte[]> fut = new java.util.concurrent.CompletableFuture<>();
             req.tcpReply = fut;
-            sock.setSoTimeout(0);
             application.TextSendMain.onLanAuthRequest(req);
-            byte[] resp = fut.get(application.LanAuth.REQUEST_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            java.io.OutputStream out = sock.getOutputStream();
+            byte[] early = req.earlyPending;
+            if (early != null) {
+                out.write(early);
+                out.flush();
+            }
+            byte[] resp = waitAuthReply(sock, in, fut, req);
             if (resp != null) {
-                java.io.OutputStream out = sock.getOutputStream();
                 out.write(resp);
                 out.flush();
             }
@@ -358,6 +368,39 @@ public final class TsServer implements Runnable {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    /** 等允许/拒绝，同时看客户端有没有关掉或发来取消。 */
+    private byte[] waitAuthReply(Socket sock, java.io.InputStream in,
+                                 java.util.concurrent.CompletableFuture<byte[]> fut,
+                                 application.LanAuth.Request req) throws Exception {
+        long end = System.currentTimeMillis() + application.LanAuth.REQUEST_WAIT_MS;
+        byte[] buf = new byte[64];
+        java.io.ByteArrayOutputStream extra = new java.io.ByteArrayOutputStream();
+        sock.setSoTimeout(400);
+        while (!fut.isDone() && System.currentTimeMillis() < end) {
+            try {
+                int n = in.read(buf);
+                if (n < 0) {
+                    application.TextSendMain.onLanAuthCancel(req);
+                    return null;
+                }
+                extra.write(buf, 0, n);
+                byte[] got = extra.toByteArray();
+                if (application.LanAuth.isCancel(got, got.length)) {
+                    application.TextSendMain.onLanAuthCancel(req);
+                    return null;
+                }
+            } catch (java.net.SocketTimeoutException ignored) {
+            } catch (IOException closed) {
+                application.TextSendMain.onLanAuthCancel(req);
+                return null;
+            }
+        }
+        if (!fut.isDone() || fut.isCompletedExceptionally() || fut.isCancelled()) {
+            return null;
+        }
+        return fut.getNow(null);
     }
 
     private static byte[] readN(java.io.InputStream in, int n) throws IOException {
@@ -521,13 +564,21 @@ public final class TsServer implements Runnable {
     }
 
     void consumeGrant(String host, byte[] psk) {
+        claimGrant(host, psk);
+    }
+
+    boolean claimGrant(String host, byte[] psk) {
         String h = normalizeHost(host);
         if (h.isEmpty() || psk == null) {
-            return;
+            return false;
         }
-        GrantEntry g = lanGrants.get(h);
-        if (g != null && Arrays.equals(g.psk, psk)) {
+        synchronized (lanGrants) {
+            GrantEntry g = lanGrants.get(h);
+            if (g == null || g.expireAt <= System.currentTimeMillis() || !Arrays.equals(g.psk, psk)) {
+                return false;
+            }
             lanGrants.remove(h, g);
+            return true;
         }
     }
 

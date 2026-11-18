@@ -1,6 +1,8 @@
 package application;
 
 import protocol.B64;
+import protocol.EcdhP256;
+import protocol.Hkdf;
 import protocol.Protocol;
 
 import java.io.IOException;
@@ -14,24 +16,33 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.security.interfaces.ECPublicKey;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 局域网临时授权（TSA1）。
- * 探测打开后，客户端点设备发 REQUEST；服务端弹窗允许后单播 GRANT（32 字节一次性 PSK）。
- * 不进广播，短 TTL，用过即废。
+ * 客户端在请求里带上临时公钥；服务端先 PENDING 回公钥（短核对码），点允许后再 GRANT。
+ * 两边用 ECDH + HKDF 各自算出一次性密钥，密钥本身不进网络包。
  */
 public final class LanAuth {
     public static final byte[] MAGIC = "TSA1".getBytes(StandardCharsets.US_ASCII);
-    public static final byte VERSION = 1;
+    /** 2：GRANT 里是公钥，不再带明文 PSK。1 的明文票直接丢掉。 */
+    public static final byte VERSION = 2;
+    public static final int PUB_LEN = 65;
+    public static final String HKDF_INFO = "textsend-v1|lan-auth";
     public static final byte TYPE_REQUEST = 1;
     public static final byte TYPE_GRANT = 2;
     public static final byte TYPE_DENY = 3;
     public static final byte TYPE_PENDING = 4;
+    /** 客户端取消这次申请。服务端丢掉待授权，不记冷却。 */
+    public static final byte TYPE_CANCEL = 5;
     public static final int NONCE_LEN = 16;
     public static final int NAME_MAX = 48;
     public static final long GRANT_TTL_MS = 60_000L;
@@ -46,8 +57,41 @@ public final class LanAuth {
         }
     }
 
+    /** 本机再点同一台，主动取消等待。 */
+    public static final class AuthCancelledException extends IllegalStateException {
+        public AuthCancelledException() {
+            super("已取消授权申请");
+        }
+    }
+
+    private static final class Active {
+        volatile Socket tcp;
+        volatile DatagramSocket udp;
+        volatile String host;
+        volatile int udpPort;
+        volatile byte[] nonce;
+        volatile boolean cancelled;
+    }
+
+    private static volatile Active active;
+
     private static final SecureRandom RNG = new SecureRandom();
-    private static final ConcurrentHashMap<ByteBuffer, CompletableFuture<Grant>> WAITING = new ConcurrentHashMap<>();
+
+    private static final class Waiter {
+        final KeyPair keys;
+        final byte[] clientPub;
+        final CompletableFuture<Grant> fut;
+        volatile byte[] pendingServerPub;
+        volatile Consumer<String> onSas;
+
+        Waiter(KeyPair keys, byte[] clientPub, CompletableFuture<Grant> fut) {
+            this.keys = keys;
+            this.clientPub = clientPub;
+            this.fut = fut;
+        }
+    }
+
+    private static final ConcurrentHashMap<ByteBuffer, Waiter> WAITING = new ConcurrentHashMap<>();
 
     private LanAuth() {
     }
@@ -71,14 +115,19 @@ public final class LanAuth {
         public final int replyPort;
         public final String name;
         public final byte[] nonce;
-        /** 非空表示这次请求走 TCP，回复写进这个 future，不再发 UDP。 */
+        /** 客户端临时公钥，65 字节未压缩。没有它就不能发允许。 */
+        public final byte[] clientPub;
+        /** 非空表示这次请求走 TCP，最终 GRANT/DENY 写进这个 future。 */
         public volatile java.util.concurrent.CompletableFuture<byte[]> tcpReply;
+        /** TCP 上先发的 PENDING（含服务端公钥），由 onLanAuthRequest 填好。 */
+        public volatile byte[] earlyPending;
 
-        public Request(String host, int replyPort, String name, byte[] nonce) {
+        public Request(String host, int replyPort, String name, byte[] nonce, byte[] clientPub) {
             this.host = host;
             this.replyPort = replyPort;
             this.name = name;
             this.nonce = nonce;
+            this.clientPub = clientPub;
         }
     }
 
@@ -97,34 +146,41 @@ public final class LanAuth {
             return null;
         }
         int nameLen = buf[6] & 0xFF;
-        if (nameLen > NAME_MAX || length != 7 + nameLen + NONCE_LEN) {
+        int base = 7 + nameLen + NONCE_LEN;
+        if (nameLen > NAME_MAX || length != base + PUB_LEN) {
             return null;
         }
         String name = new String(buf, 7, nameLen, StandardCharsets.UTF_8);
-        byte[] nonce = Arrays.copyOfRange(buf, 7 + nameLen, 7 + nameLen + NONCE_LEN);
-        return new Request(host, replyPort, name, nonce);
+        byte[] nonce = Arrays.copyOfRange(buf, 7 + nameLen, base);
+        byte[] pub = Arrays.copyOfRange(buf, base, base + PUB_LEN);
+        if (pub[0] != 0x04) {
+            return null;
+        }
+        return new Request(host, replyPort, name, nonce, pub);
     }
 
-    public static byte[] encodeRequest(String name, byte[] nonce) {
+    public static byte[] encodeRequest(String name, byte[] nonce, byte[] clientPub) {
         byte[] nameBytes = clipName(name);
-        byte[] out = new byte[7 + nameBytes.length + NONCE_LEN];
+        byte[] out = new byte[7 + nameBytes.length + NONCE_LEN + PUB_LEN];
         System.arraycopy(MAGIC, 0, out, 0, 4);
         out[4] = VERSION;
         out[5] = TYPE_REQUEST;
         out[6] = (byte) nameBytes.length;
         System.arraycopy(nameBytes, 0, out, 7, nameBytes.length);
         System.arraycopy(nonce, 0, out, 7 + nameBytes.length, NONCE_LEN);
+        System.arraycopy(clientPub, 0, out, 7 + nameBytes.length + NONCE_LEN, PUB_LEN);
         return out;
     }
 
-    public static byte[] encodeGrant(byte[] nonce, byte[] psk, int tcpPort, long expireAtMs) {
-        byte[] out = new byte[6 + NONCE_LEN + Protocol.PSK_LEN + 2 + 4];
+    /** GRANT 里是服务端临时公钥，没有 PSK。 */
+    public static byte[] encodeGrant(byte[] nonce, byte[] serverPub, int tcpPort, long expireAtMs) {
+        byte[] out = new byte[6 + NONCE_LEN + PUB_LEN + 2 + 4];
         System.arraycopy(MAGIC, 0, out, 0, 4);
         out[4] = VERSION;
         out[5] = TYPE_GRANT;
         System.arraycopy(nonce, 0, out, 6, NONCE_LEN);
-        System.arraycopy(psk, 0, out, 6 + NONCE_LEN, Protocol.PSK_LEN);
-        int o = 6 + NONCE_LEN + Protocol.PSK_LEN;
+        System.arraycopy(serverPub, 0, out, 6 + NONCE_LEN, PUB_LEN);
+        int o = 6 + NONCE_LEN + PUB_LEN;
         out[o] = (byte) (tcpPort >> 8);
         out[o + 1] = (byte) tcpPort;
         int expSec = (int) Math.min(Integer.MAX_VALUE, expireAtMs / 1000L);
@@ -133,6 +189,92 @@ public final class LanAuth {
         out[o + 4] = (byte) (expSec >> 8);
         out[o + 5] = (byte) expSec;
         return out;
+    }
+
+    public static byte[] encodeCancel(byte[] nonce) {
+        byte[] out = new byte[6 + NONCE_LEN];
+        System.arraycopy(MAGIC, 0, out, 0, 4);
+        out[4] = VERSION;
+        out[5] = TYPE_CANCEL;
+        if (nonce != null && nonce.length >= NONCE_LEN) {
+            System.arraycopy(nonce, 0, out, 6, NONCE_LEN);
+        }
+        return out;
+    }
+
+    public static boolean isCancel(byte[] buf, int length) {
+        return isAuthPacket(buf, length) && length >= 6 + NONCE_LEN && buf[5] == TYPE_CANCEL;
+    }
+
+    public static boolean isCancelled(Throwable e) {
+        Throwable cur = e;
+        while (cur != null) {
+            if (cur instanceof AuthCancelledException) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    /** 正在等这台的允许。再点同一台时用来取消。 */
+    public static boolean isWaiting(String host) {
+        Active a = active;
+        return a != null && !a.cancelled && sameHost(a.host, host);
+    }
+
+    /** 取消当前申请：通知对方丢掉待授权，并放开本机等待。 */
+    public static boolean cancelActive() {
+        Active a = active;
+        if (a == null || a.cancelled) {
+            return false;
+        }
+        a.cancelled = true;
+        byte[] pkt = a.nonce == null ? null : encodeCancel(a.nonce);
+        if (pkt != null && a.tcp != null && a.tcp.isConnected()) {
+            try {
+                OutputStream out = a.tcp.getOutputStream();
+                out.write(pkt);
+                out.flush();
+                a.tcp.shutdownOutput();
+            } catch (Exception ignored) {
+            }
+        }
+        if (pkt != null && a.udp != null && a.host != null && a.udpPort > 0) {
+            try {
+                InetAddress addr = InetAddress.getByName(a.host);
+                a.udp.send(new DatagramPacket(pkt, pkt.length, addr, a.udpPort));
+            } catch (Exception ignored) {
+            }
+        }
+        if (a.nonce != null) {
+            Waiter waiter = WAITING.get(ByteBuffer.wrap(a.nonce));
+            if (waiter != null) {
+                waiter.fut.completeExceptionally(new AuthCancelledException());
+            }
+        }
+        if (a.tcp != null) {
+            try {
+                a.tcp.close();
+            } catch (IOException ignored) {
+            }
+        }
+        return true;
+    }
+
+    private static boolean sameHost(String a, String b) {
+        return normHost(a).equals(normHost(b));
+    }
+
+    private static String normHost(String host) {
+        if (host == null) {
+            return "";
+        }
+        String h = host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (h.startsWith("::ffff:") && h.length() > 7) {
+            h = h.substring(7);
+        }
+        return h;
     }
 
     public static byte[] encodeDeny(byte[] nonce) {
@@ -187,16 +329,51 @@ public final class LanAuth {
         return false;
     }
 
-    public static byte[] encodePending(byte[] nonce) {
-        byte[] out = new byte[6 + NONCE_LEN];
+    public static byte[] encodePending(byte[] nonce, byte[] serverPub) {
+        if (serverPub == null || serverPub.length != PUB_LEN) {
+            throw new IllegalArgumentException("PENDING 需要服务端公钥");
+        }
+        byte[] out = new byte[6 + NONCE_LEN + PUB_LEN];
         System.arraycopy(MAGIC, 0, out, 0, 4);
         out[4] = VERSION;
         out[5] = TYPE_PENDING;
         System.arraycopy(nonce, 0, out, 6, NONCE_LEN);
+        System.arraycopy(serverPub, 0, out, 6 + NONCE_LEN, PUB_LEN);
         return out;
     }
 
-    /** 客户端收到 GRANT/DENY 时调用。 */
+    /** PENDING 里的服务端公钥；长度不对返回 null。 */
+    public static byte[] pendingServerPub(byte[] buf, int length) {
+        int need = 6 + NONCE_LEN + PUB_LEN;
+        if (buf == null || length < need || buf[5] != TYPE_PENDING) {
+            return null;
+        }
+        byte[] pub = Arrays.copyOfRange(buf, 6 + NONCE_LEN, need);
+        return pub[0] == 0x04 ? pub : null;
+    }
+
+    /** 短核对码：SHA-256(clientPub‖serverPub‖nonce) 前 4 字节 → ABCD-EF01。 */
+    public static String sasCode(byte[] clientPub, byte[] serverPub, byte[] nonce) {
+        try {
+            if (clientPub == null || serverPub == null || nonce == null
+                    || clientPub.length != PUB_LEN || serverPub.length != PUB_LEN
+                    || nonce.length != NONCE_LEN) {
+                return "";
+            }
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(clientPub);
+            md.update(serverPub);
+            md.update(nonce);
+            byte[] dig = md.digest();
+            String hex = String.format("%02X%02X%02X%02X",
+                    dig[0] & 0xFF, dig[1] & 0xFF, dig[2] & 0xFF, dig[3] & 0xFF);
+            return hex.substring(0, 4) + "-" + hex.substring(4);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 客户端收到 GRANT/DENY/PENDING 时调用。 */
     public static void onAuthReply(byte[] buf, int length) {
         if (!isAuthPacket(buf, length) || length < 6 + NONCE_LEN) {
             return;
@@ -204,30 +381,77 @@ public final class LanAuth {
         byte type = buf[5];
         byte[] nonce = Arrays.copyOfRange(buf, 6, 6 + NONCE_LEN);
         ByteBuffer key = ByteBuffer.wrap(nonce);
-        CompletableFuture<Grant> fut = WAITING.get(key);
-        if (fut == null) {
+        Waiter waiter = WAITING.get(key);
+        if (waiter == null) {
             return;
         }
         if (type == TYPE_DENY) {
             WAITING.remove(key);
-            fut.completeExceptionally(new AuthDeniedException(denyMessage(denyWaitSec(buf, length))));
+            waiter.fut.completeExceptionally(new AuthDeniedException(denyMessage(denyWaitSec(buf, length))));
             return;
         }
         if (type == TYPE_PENDING) {
+            notePending(waiter, buf, length, nonce);
             return;
         }
         if (type != TYPE_GRANT) {
             return;
         }
-        int need = 6 + NONCE_LEN + Protocol.PSK_LEN + 2 + 4;
-        if (length < need) {
+        try {
+            Grant grant = grantFromPacket(buf, length, waiter, nonce);
+            WAITING.remove(key);
+            waiter.fut.complete(grant);
+        } catch (Exception e) {
+            WAITING.remove(key);
+            waiter.fut.completeExceptionally(e);
+        }
+    }
+
+    private static void notePending(Waiter waiter, byte[] buf, int length, byte[] nonce) {
+        byte[] serverPub = pendingServerPub(buf, length);
+        if (serverPub == null) {
             return;
         }
-        byte[] psk = Arrays.copyOfRange(buf, 6 + NONCE_LEN, 6 + NONCE_LEN + Protocol.PSK_LEN);
-        int o = 6 + NONCE_LEN + Protocol.PSK_LEN;
+        waiter.pendingServerPub = serverPub;
+        String sas = sasCode(waiter.clientPub, serverPub, nonce);
+        Consumer<String> cb = waiter.onSas;
+        if (cb != null && !sas.isEmpty()) {
+            try {
+                cb.accept(sas);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 用自己的临时私钥和对面公钥算出一次性 PSK。包里看不到这 32 字节。 */
+    public static byte[] deriveGrantPsk(KeyPair local, byte[] remotePub, byte[] nonce) throws Exception {
+        if (remotePub == null || remotePub.length != PUB_LEN || remotePub[0] != 0x04) {
+            throw new IllegalArgumentException("授权公钥无效");
+        }
+        byte[] secret = EcdhP256.sharedSecret(local, EcdhP256.decodePublic(remotePub));
+        return Hkdf.derive(secret, nonce, HKDF_INFO, Protocol.PSK_LEN);
+    }
+
+    private static Grant grantFromPacket(byte[] buf, int length, Waiter waiter, byte[] expectNonce) throws Exception {
+        int need = 6 + NONCE_LEN + PUB_LEN + 2 + 4;
+        if (length < need) {
+            throw new IllegalStateException("授权回应太短");
+        }
+        byte[] nonce = Arrays.copyOfRange(buf, 6, 6 + NONCE_LEN);
+        if (!Arrays.equals(nonce, expectNonce)) {
+            throw new IllegalStateException("授权回应和这次请求对不上");
+        }
+        byte[] serverPub = Arrays.copyOfRange(buf, 6 + NONCE_LEN, 6 + NONCE_LEN + PUB_LEN);
+        if (serverPub[0] != 0x04) {
+            throw new IllegalStateException("授权公钥无效");
+        }
+        byte[] pending = waiter.pendingServerPub;
+        if (pending != null && !Arrays.equals(pending, serverPub)) {
+            throw new IllegalStateException("核对码对应的公钥变了，已中止");
+        }
+        int o = 6 + NONCE_LEN + PUB_LEN;
         int tcpPort = ((buf[o] & 0xFF) << 8) | (buf[o + 1] & 0xFF);
-        WAITING.remove(key);
-        fut.complete(new Grant(psk, tcpPort));
+        return new Grant(deriveGrantPsk(waiter.keys, serverPub, nonce), tcpPort);
     }
 
     /**
@@ -236,31 +460,58 @@ public final class LanAuth {
      */
     public static Grant requestAuth(DatagramSocket sock, String host, int udpPort, String deviceName)
             throws Exception {
+        return requestAuth(sock, host, udpPort, deviceName, null);
+    }
+
+    public static Grant requestAuth(DatagramSocket sock, String host, int udpPort, String deviceName,
+                                    Consumer<String> onSas) throws Exception {
         byte[] nonce = new byte[NONCE_LEN];
         RNG.nextBytes(nonce);
+        KeyPair keys = EcdhP256.generate();
+        byte[] pub = EcdhP256.encodePublic((ECPublicKey) keys.getPublic());
         ByteBuffer key = ByteBuffer.wrap(nonce);
         CompletableFuture<Grant> fut = new CompletableFuture<>();
-        WAITING.put(key, fut);
+        Waiter waiter = new Waiter(keys, pub, fut);
+        waiter.onSas = onSas;
+        WAITING.put(key, waiter);
+        Active mine = beginActive(host, udpPort, nonce);
+        mine.udp = sock;
         try {
-            byte[] packet = encodeRequest(deviceName, nonce);
+            byte[] packet = encodeRequest(deviceName, nonce, pub);
             InetAddress addr = InetAddress.getByName(host);
             sock.send(new DatagramPacket(packet, packet.length, addr, udpPort));
             return fut.get(REQUEST_WAIT_MS, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             WAITING.remove(key);
+            if (mine.cancelled) {
+                throw new AuthCancelledException();
+            }
             throw e;
+        } finally {
+            endActive(mine);
         }
     }
 
     /**
      * 连上对方的 TCP 端口直接写 TSA1，回复走同一条连接。
-     * 不依赖 UDP 回包，授权记下的地址和随后握手的来源地址一致。
+     * 先可能收到 PENDING（核对码），再等 GRANT/DENY。
      */
     public static Grant requestAuthTcp(String host, int tcpPort, String deviceName) throws Exception {
+        return requestAuthTcp(host, tcpPort, deviceName, null);
+    }
+
+    public static Grant requestAuthTcp(String host, int tcpPort, String deviceName, Consumer<String> onSas)
+            throws Exception {
         byte[] nonce = new byte[NONCE_LEN];
         RNG.nextBytes(nonce);
-        byte[] packet = encodeRequest(deviceName, nonce);
+        KeyPair keys = EcdhP256.generate();
+        byte[] pub = EcdhP256.encodePublic((ECPublicKey) keys.getPublic());
+        byte[] packet = encodeRequest(deviceName, nonce, pub);
+        Waiter waiter = new Waiter(keys, pub, new CompletableFuture<>());
+        waiter.onSas = onSas;
         Socket sock = new Socket();
+        Active mine = beginActive(host, 0, nonce);
+        mine.tcp = sock;
         try {
             sock.connect(new InetSocketAddress(host, tcpPort), 5000);
             sock.setSoTimeout((int) Math.min(Integer.MAX_VALUE, REQUEST_WAIT_MS));
@@ -268,31 +519,62 @@ public final class LanAuth {
             out.write(packet);
             out.flush();
             InputStream in = sock.getInputStream();
-            byte[] head = readN(in, 6);
-            if (!isAuthPacket(head, 6)) {
-                throw new IllegalStateException("服务端没有按授权回应");
-            }
-            byte type = head[5];
-            if (type == TYPE_DENY) {
-                byte[] rest = readDenyRest(sock, in);
+            while (true) {
+                byte[] head = readN(in, 6);
+                if (!isAuthPacket(head, 6)) {
+                    throw new IllegalStateException("服务端没有按授权回应");
+                }
+                byte type = head[5];
+                if (type == TYPE_DENY) {
+                    byte[] rest = readDenyRest(sock, in);
+                    byte[] all = new byte[head.length + rest.length];
+                    System.arraycopy(head, 0, all, 0, head.length);
+                    System.arraycopy(rest, 0, all, head.length, rest.length);
+                    throw new AuthDeniedException(denyMessage(denyWaitSec(all, all.length)));
+                }
+                if (type == TYPE_PENDING) {
+                    byte[] rest = readN(in, NONCE_LEN + PUB_LEN);
+                    byte[] all = new byte[head.length + rest.length];
+                    System.arraycopy(head, 0, all, 0, head.length);
+                    System.arraycopy(rest, 0, all, head.length, rest.length);
+                    notePending(waiter, all, all.length, nonce);
+                    continue;
+                }
+                if (type != TYPE_GRANT) {
+                    throw new IllegalStateException("服务端没有按授权回应");
+                }
+                byte[] rest = readN(in, NONCE_LEN + PUB_LEN + 2 + 4);
                 byte[] all = new byte[head.length + rest.length];
                 System.arraycopy(head, 0, all, 0, head.length);
                 System.arraycopy(rest, 0, all, head.length, rest.length);
-                throw new AuthDeniedException(denyMessage(denyWaitSec(all, all.length)));
+                return grantFromPacket(all, all.length, waiter, nonce);
             }
-            if (type != TYPE_GRANT) {
-                throw new IllegalStateException("服务端没有按授权回应");
+        } catch (Exception e) {
+            if (mine.cancelled) {
+                throw new AuthCancelledException();
             }
-            byte[] rest = readN(in, NONCE_LEN + Protocol.PSK_LEN + 2 + 4);
-            byte[] psk = Arrays.copyOfRange(rest, NONCE_LEN, NONCE_LEN + Protocol.PSK_LEN);
-            int o = NONCE_LEN + Protocol.PSK_LEN;
-            int port = ((rest[o] & 0xFF) << 8) | (rest[o + 1] & 0xFF);
-            return new Grant(psk, port);
+            throw e;
         } finally {
+            endActive(mine);
             try {
                 sock.close();
             } catch (IOException ignored) {
             }
+        }
+    }
+
+    private static Active beginActive(String host, int udpPort, byte[] nonce) {
+        Active mine = new Active();
+        mine.host = host;
+        mine.udpPort = udpPort;
+        mine.nonce = nonce;
+        active = mine;
+        return mine;
+    }
+
+    private static void endActive(Active mine) {
+        if (active == mine) {
+            active = null;
         }
     }
 

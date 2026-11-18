@@ -50,8 +50,8 @@ public final class UserConfig {
     private static boolean qrCloseOnFocusLost = false;
     /** 同一 IP 每分钟最多几条授权请求（超出静默拒绝） */
     private static int authRatePerMin = 3;
-    /** 拒绝后该 IP 冷却秒数（冷却期内静默拒绝） */
-    private static int authCooldownSec = 120;
+    /** 拒绝后该 IP 冷却秒数（冷却期内静默拒绝）。默认 10。 */
+    private static int authCooldownSec = 10;
     /** 授权黑名单 IP（持久化） */
     private static final LinkedHashSet<String> authBlacklist = new LinkedHashSet<>();
     private static String clientHost = "";
@@ -142,7 +142,7 @@ public final class UserConfig {
             maxClients = parseMaxClients(p.getProperty("maxClients", "7"));
             qrCloseOnFocusLost = Boolean.parseBoolean(p.getProperty("qrCloseOnFocusLost", "false"));
             authRatePerMin = parseBoundedInt(p.getProperty("authRatePerMin", "3"), 3, 1, 60);
-            authCooldownSec = parseBoundedInt(p.getProperty("authCooldownSec", "120"), 120, 0, 86400);
+            authCooldownSec = parseBoundedInt(p.getProperty("authCooldownSec", "10"), 10, 0, 86400);
             authBlacklist.clear();
             authBlacklist.addAll(parseBlacklist(p.getProperty("authBlacklist", "")));
             clientHost = p.getProperty("clientHost", "").trim();
@@ -243,7 +243,7 @@ public final class UserConfig {
         maxClients = 7;
         qrCloseOnFocusLost = false;
         authRatePerMin = 3;
-        authCooldownSec = 120;
+        authCooldownSec = 10;
         authBlacklist.clear();
         clientHost = "";
         clientPort = 54300;
