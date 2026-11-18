@@ -29,6 +29,8 @@ public final class UserConfig {
 
     private static float uiScale = 1.0f;
     private static int listenPort = 54300;
+    /** 网页桥 Way B。和 v1 的 54300 分开。 */
+    private static int webBridgePort = 54301;
     private static boolean preferMini = false;
     private static boolean followSymlinks = false;
     private static String listenIp = "";
@@ -46,8 +48,8 @@ public final class UserConfig {
     private static boolean lanDiscoverPortFollowListen = true;
     /** 中键启动时的最大客户端数（左键仍为 1） */
     private static int maxClients = 7;
-    /** 二维码失焦（点到别处/其它软件）时自动关闭 */
-    private static boolean qrCloseOnFocusLost = false;
+    /** 弹出窗口失焦即关（主窗口不关）。默认开。 */
+    private static boolean popupsCloseOnFocusLost = true;
     /** 同一 IP 每分钟最多几条授权请求（超出静默拒绝） */
     private static int authRatePerMin = 3;
     /** 拒绝后该 IP 冷却秒数（冷却期内静默拒绝）。默认 10。 */
@@ -118,6 +120,7 @@ public final class UserConfig {
             p.load(in);
             uiScale = parseScale(p.getProperty("uiScale", "1.0"));
             listenPort = Integer.parseInt(p.getProperty("listenPort", "54300"));
+            webBridgePort = parsePort(54301, p.getProperty("webBridgePort", "54301"));
             preferMini = Boolean.parseBoolean(p.getProperty("preferMini", "false"));
             followSymlinks = Boolean.parseBoolean(p.getProperty("followSymlinks", "false"));
             listenIp = p.getProperty("listenIp", "").trim();
@@ -140,7 +143,9 @@ public final class UserConfig {
             lanDiscoverPortFollowListen = Boolean.parseBoolean(
                     p.getProperty("lanDiscoverPortFollowListen", "true"));
             maxClients = parseMaxClients(p.getProperty("maxClients", "7"));
-            qrCloseOnFocusLost = Boolean.parseBoolean(p.getProperty("qrCloseOnFocusLost", "false"));
+            // 新键默认开。旧键 qrCloseOnFocusLost 每次保存都会写成 false，不沿用。
+            String popupsClose = p.getProperty("popupsCloseOnFocusLost");
+            popupsCloseOnFocusLost = popupsClose == null || Boolean.parseBoolean(popupsClose);
             authRatePerMin = parseBoundedInt(p.getProperty("authRatePerMin", "3"), 3, 1, 60);
             authCooldownSec = parseBoundedInt(p.getProperty("authCooldownSec", "10"), 10, 0, 86400);
             authBlacklist.clear();
@@ -165,6 +170,7 @@ public final class UserConfig {
             Properties p = new Properties();
             p.setProperty("uiScale", Float.toString(uiScale));
             p.setProperty("listenPort", Integer.toString(listenPort));
+            p.setProperty("webBridgePort", Integer.toString(webBridgePort));
             p.setProperty("preferMini", Boolean.toString(preferMini));
             p.setProperty("followSymlinks", Boolean.toString(followSymlinks));
             p.setProperty("listenIp", listenIp == null ? "" : listenIp);
@@ -178,7 +184,7 @@ public final class UserConfig {
             p.setProperty("lanDiscoverPort", Integer.toString(lanDiscoverPort));
             p.setProperty("lanDiscoverPortFollowListen", Boolean.toString(lanDiscoverPortFollowListen));
             p.setProperty("maxClients", Integer.toString(maxClients));
-            p.setProperty("qrCloseOnFocusLost", Boolean.toString(qrCloseOnFocusLost));
+            p.setProperty("popupsCloseOnFocusLost", Boolean.toString(popupsCloseOnFocusLost));
             p.setProperty("authRatePerMin", Integer.toString(authRatePerMin));
             p.setProperty("authCooldownSec", Integer.toString(authCooldownSec));
             p.setProperty("authBlacklist", String.join(",", authBlacklist));
@@ -228,6 +234,7 @@ public final class UserConfig {
         boolean wasDiscover = lanDiscover;
         uiScale = 1.0f;
         listenPort = 54300;
+        webBridgePort = 54301;
         preferMini = false;
         followSymlinks = false;
         listenIp = "";
@@ -241,7 +248,7 @@ public final class UserConfig {
         lanDiscoverPort = 54300;
         lanDiscoverPortFollowListen = true;
         maxClients = 7;
-        qrCloseOnFocusLost = false;
+        popupsCloseOnFocusLost = true;
         authRatePerMin = 3;
         authCooldownSec = 10;
         authBlacklist.clear();
@@ -265,6 +272,18 @@ public final class UserConfig {
 
     public static int getListenPort() {
         return listenPort;
+    }
+
+    public static int getWebBridgePort() {
+        return webBridgePort;
+    }
+
+    public static void setWebBridgePort(int port) {
+        if (port < 1 || port > 65535) {
+            return;
+        }
+        webBridgePort = port;
+        save();
     }
 
     public static void setListenPort(int port) {
@@ -443,12 +462,12 @@ public final class UserConfig {
         return true;
     }
 
-    public static boolean isQrCloseOnFocusLost() {
-        return qrCloseOnFocusLost;
+    public static boolean isPopupsCloseOnFocusLost() {
+        return popupsCloseOnFocusLost;
     }
 
-    public static void setQrCloseOnFocusLost(boolean v) {
-        qrCloseOnFocusLost = v;
+    public static void setPopupsCloseOnFocusLost(boolean v) {
+        popupsCloseOnFocusLost = v;
         save();
     }
 

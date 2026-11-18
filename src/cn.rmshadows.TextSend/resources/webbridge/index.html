@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>TextSend 兼容模式</title>
+  <style>
+    :root {
+      --bg: #f3f0e8;
+      --ink: #1c1c1c;
+      --muted: #5c574e;
+      --line: #d9d3c7;
+      --card: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+    }
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+    }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h1 { font-size: 1.35rem; margin: 0; letter-spacing: 0.01em; }
+    h2 { font-size: 0.95rem; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+    .chip { flex: none; font-size: 0.875rem; padding: 4px 10px; border: 1px solid var(--line); background: #fff; }
+    .chip.ok { background: #e7f2e4; color: #1d6b32; border-color: #b7d7b0; }
+    .chip.down, .chip.dead { background: #9c2f23; color: #fff; border-color: #9c2f23; }
+    .warn { background: #fff4d6; border: 1px solid #c4a35a; padding: 10px 12px; margin: 14px 0; }
+    #status { min-height: 1.5em; margin: 0 0 12px; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); padding: 14px; }
+    textarea {
+      width: 100%;
+      min-height: 9rem;
+      font: inherit;
+      padding: 10px;
+      border: 1px solid #222;
+      background: #fff;
+      resize: vertical;
+    }
+    button {
+      font: inherit;
+      padding: 10px 18px;
+      border: 1px solid #222;
+      background: #1c1c1c;
+      color: #fff;
+    }
+    button.ghost { background: #fff; color: #1c1c1c; padding: 6px 12px; }
+    button:disabled { color: #888; background: #eee; border-color: #bbb; }
+    #send { margin-top: 0; }
+    .msg {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      margin-top: 8px;
+    }
+    .msg .main { flex: 1; min-width: 0; }
+    .when { color: var(--muted); font-size: 0.8rem; margin-bottom: 4px; }
+    .msg pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    .tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .tools button { margin: 0; }
+    .empty { color: var(--muted); margin: 0; }
+    .sent-title { margin-top: 16px; }
+    @media (min-width: 800px) {
+      .grid { grid-template-columns: 1fr 1fr; align-items: start; }
+      textarea { min-height: 18rem; }
+    }
+    @media (max-width: 799px) {
+      #send { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>TextSend 兼容模式</h1>
+      <div id="link" class="chip wait">连接中</div>
+    </div>
+    <div class="warn">没装 App 时用浏览器传文字、图片和文件。HTTP 加载，加密在应用层，只在可信局域网用。单个文件不超过 32MB。</div>
+    <p id="status"></p>
+    <div class="grid">
+      <section class="card">
+        <h2>发给电脑</h2>
+        <textarea id="box" autocomplete="off" placeholder="输入文字。也可直接粘贴剪贴板里的图片。"></textarea>
+        <div class="tools">
+          <button id="send" type="button">发送</button>
+          <button id="pickImg" class="ghost" type="button">图片</button>
+          <button id="pickFile" class="ghost" type="button">文件</button>
+          <button id="pickDir" class="ghost" type="button">文件夹</button>
+        </div>
+        <input id="inImg" type="file" accept="image/*" multiple hidden>
+        <input id="inFile" type="file" multiple hidden>
+        <input id="inDir" type="file" multiple webkitdirectory hidden>
+        <h2 class="sent-title">已发出</h2>
+        <p id="sentEmpty" class="empty">还没有</p>
+        <div id="sent"></div>
+      </section>
+      <section class="card">
+        <h2>电脑发来的</h2>
+        <p id="empty" class="empty">还没有</p>
+        <div id="incoming"></div>
+      </section>
+    </div>
+  </div>
+  <script src="/bridge.js"></script>
+</body>
+</html>

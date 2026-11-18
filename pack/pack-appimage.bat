@@ -25,7 +25,7 @@ copy /Y "%FAT_JAR%" "%JPACKAGE_INPUT%\TextSend.jar" >nul
 
 echo ==^> jpackage app-image
 REM Explicit Swing/AWT modules; ZXing stays in the fat JAR classpath
-set "JP_MODULES=java.base,java.desktop,java.datatransfer,java.sql,java.xml,jdk.charsets"
+set "JP_MODULES=java.base,java.desktop,java.datatransfer,java.sql,java.xml,jdk.charsets,jdk.httpserver"
 if not exist "%PACK_DIR%\win-console.properties" (
   echo Missing %PACK_DIR%\win-console.properties
   exit /b 1

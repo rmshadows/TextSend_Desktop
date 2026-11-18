@@ -53,6 +53,7 @@ import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.URI;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -214,6 +215,26 @@ public class TextSendMain {
     private static JButton buttonSend;
     private static JButton buttonFile;
     private static JButton buttonQr;
+    private static JButton buttonWeb;
+    private static JDialog webDialog;
+    /** 兼容模式窗口当前在看哪一档。只有 B 真的在跑；切到 A/C 不关 B。 */
+    private static char webWayShown = 'B';
+    private static JButton webWayB;
+    private static JButton webWayA;
+    private static JButton webWayC;
+    private static JLabel webHintLabel;
+    private static JLabel webStateLabel;
+    private static JTextField webPortField;
+    private static JPanel webQrPanel;
+    private static BufferedImage webQrImage;
+    private static String webQrPlaceholder = "启动后显示二维码";
+    private static JTextArea webUrlArea;
+    private static JButton webPowerBtn;
+    private static JButton webRefreshBtn;
+    private static Timer webDialogTimer;
+    private static String webQrShown;
+    /** paintWebDialog 在这段时间内保留「已复制链接」，不被 1 秒刷新盖掉。 */
+    private static long webCopiedUntil;
     private static JButton buttonHelp;
     private static JLabel labelStatus;
     private static JPanel statusBar;
@@ -443,6 +464,9 @@ public class TextSendMain {
         buttonSend = new JButton("发送");
         buttonFile = new JButton("文件");
         buttonQr = new JButton("二维码");
+        buttonWeb = new JButton(WebBridge.isRunning() ? "兼容中" : "兼容模式");
+        buttonWeb.setToolTipText("给没装 TextSend 的手机用，比如 iPhone 浏览器。可传文字、图片和文件。安卓和电脑客户端仍走原来的二维码。");
+        buttonWeb.addActionListener(e -> showWebBridge());
         buttonHelp = new JButton("帮助");
         buttonHelp.setToolTipText("查看操作说明与快捷键");
         buttonHelp.addActionListener(e -> showHelp());
@@ -450,7 +474,7 @@ public class TextSendMain {
         buttonSettings.setToolTipText("局域网探测、授权限流/冷却/黑名单等");
         buttonSettings.addActionListener(e -> showSettings());
         buttonRole.setToolTipText("在服务端 / 客户端之间切换（已连接时不可用）");
-        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件");
+        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件。兼容模式开着且没有 v1 客户端时，文字发给浏览器里的手机。");
         buttonFile.setToolTipText("选择文件加入待发列表");
         buttonQr.setToolTipText("显示连接二维码（服务端）；手动打开后连上也不自动关");
         toggleMini.setToolTipText("置顶小窗 / 恢复大窗");
@@ -869,7 +893,7 @@ public class TextSendMain {
         }
         if (buttonQr != null) {
             buttonQr.setToolTipText(isServerMode
-                    ? (UserConfig.isQrCloseOnFocusLost()
+                    ? (UserConfig.isPopupsCloseOnFocusLost()
                     ? "显示二维码；失焦或 Esc 关闭；手动打开后连上也不因连上而关"
                     : "显示二维码；Esc 关闭；手动打开后连上也不自动关")
                     : "客户端模式无二维码");
@@ -1139,6 +1163,10 @@ public class TextSendMain {
                 checkAutoStart.addActionListener(e -> UserConfig.setAutoStartServer(checkAutoStart.isSelected()));
                 netLeft.add(checkAutoStart);
                 net.add(netLeft, BorderLayout.CENTER);
+                if (buttonWeb != null) {
+                    fixToolbarButton(buttonWeb, 96);
+                    net.add(buttonWeb, BorderLayout.EAST);
+                }
                 comboIps.setPreferredSize(new Dimension(UserConfig.s(420), UserConfig.s(28)));
                 comboIps.setMinimumSize(new Dimension(UserConfig.s(280), UserConfig.s(28)));
                 body.add(net);
@@ -1623,6 +1651,9 @@ public class TextSendMain {
                 valueKey.setToolTipText(null);
             }
             buttonQr.setEnabled(true);
+            if (buttonWeb != null) {
+                buttonWeb.setText(WebBridge.isRunning() ? "兼容中" : "兼容模式");
+            }
             if (!transferUi && labelStatus != null) {
                 labelStatus.setText(runningStatusText());
             }
@@ -1929,8 +1960,9 @@ public class TextSendMain {
             return;
         }
         if (isServerMode) {
-            if (!isServerRunning()) {
-                flashStatus("服务未运行");
+            boolean bridgeUp = WebBridge.isRunning() && WebBridge.hasSession();
+            if (!isServerRunning() && !bridgeUp) {
+                flashStatus(WebBridge.isRunning() ? "兼容模式会话已过期" : "服务未运行");
                 return;
             }
         } else if (!isClientConnected || clientPeer == null || !clientPeer.isAlive()) {
@@ -1941,15 +1973,37 @@ public class TextSendMain {
         new Thread(() -> {
             try {
                 if (isServerMode) {
-                    int n = TsServer.sendToAllCurrent(text);
-                    if (n < 0) {
+                    int alive = TsServer.aliveCountCurrent();
+                    if (alive > 0) {
+                        int n = TsServer.sendToAllCurrent(text);
+                        if (n > 0) {
+                            onSendFinished(true, text, null);
+                            return;
+                        }
+                    }
+                    if (WebBridge.isRunning()) {
+                        if (!WebBridge.hasSession()) {
+                            onSendFinished(false, text, "兼容模式会话已过期");
+                            return;
+                        }
+                        int delivered = WebBridge.pushText(text);
+                        if (delivered < 0) {
+                            onSendFinished(false, text, "文字超过 64KB");
+                            return;
+                        }
+                        if (delivered == 0) {
+                            onSendFinished(false, text, "兼容模式会话已过期");
+                            return;
+                        }
+                        onSendFinished(true, text, null);
+                        return;
+                    }
+                    if (alive < 0 || !isServerRunning()) {
                         onSendFinished(false, text, "服务未运行");
-                        return;
-                    }
-                    if (n == 0) {
+                    } else {
                         onSendFinished(false, text, "没有已连接的客户端");
-                        return;
                     }
+                    return;
                 } else {
                     TsPeer peer = clientPeer;
                     if (!isClientConnected || peer == null || !peer.isAlive()) {
@@ -2387,10 +2441,10 @@ public class TextSendMain {
         sizeDigitField(fieldMaxClients, 4);
         maxRow.add(fieldMaxClients);
 
-        JCheckBox qrFocusClose = new JCheckBox("二维码失焦自动关闭");
+        JCheckBox qrFocusClose = new JCheckBox("弹出窗口失焦即关");
         qrFocusClose.setAlignmentX(Component.LEFT_ALIGNMENT);
-        qrFocusClose.setSelected(UserConfig.isQrCloseOnFocusLost());
-        qrFocusClose.setToolTipText("默认关。打开后，点到其它窗口/软件时二维码自动关掉（Esc 仍可关）。");
+        qrFocusClose.setSelected(UserConfig.isPopupsCloseOnFocusLost());
+        qrFocusClose.setToolTipText("默认开。点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。Esc 仍可关。");
 
         JPanel rateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
         rateRow.setOpaque(false);
@@ -2486,7 +2540,7 @@ public class TextSendMain {
             fieldDiscoPort.setText("54300");
             fieldDiscoPort.setEnabled(false);
             fieldMaxClients.setText("7");
-            qrFocusClose.setSelected(false);
+            qrFocusClose.setSelected(true);
             fieldAuthRate.setText("3");
             fieldAuthCool.setText("10");
             blacklistEditor.clear();
@@ -2555,7 +2609,7 @@ public class TextSendMain {
         }
         blacklistEditor.commitField();
         UserConfig.setAuthBlacklistText(blacklistEditor.text());
-        UserConfig.setQrCloseOnFocusLost(qrFocusClose.isSelected());
+        UserConfig.setPopupsCloseOnFocusLost(qrFocusClose.isSelected());
         UserConfig.setLanDiscoverAnnounce(announce.isSelected());
         UserConfig.setLanDiscoverPause(pause.isSelected());
         UserConfig.setLanDiscover(discover.isSelected());
@@ -3499,6 +3553,11 @@ public class TextSendMain {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
+    /** 网页桥收到文件后在状态栏提一句。 */
+    static void noteWeb(String s) {
+        flashStatus(s);
+    }
+
     private static void flashStatus(String s) {
         if (labelStatus == null) {
             return;
@@ -3516,6 +3575,363 @@ public class TextSendMain {
         statusFlashTimer.start();
     }
 
+    private static void showWebBridge() {
+        if (webDialog != null && !webDialog.isDisplayable()) {
+            webDialog = null;
+        }
+        if (webDialog == null) {
+            webDialog = new JDialog(frame, "兼容模式", false);
+            webDialog.setAlwaysOnTop(true);
+            webDialog.setDefaultCloseOperation(JDialog.HIDE_ON_CLOSE);
+            JPanel box = new JPanel(new BorderLayout(0, UserConfig.s(8)));
+            box.setBackground(CARD);
+            box.setBorder(new EmptyBorder(UserConfig.s(12), UserConfig.s(12), UserConfig.s(12), UserConfig.s(12)));
+            webWayB = new JButton("B 加密");
+            webWayA = new JButton("A 明文");
+            webWayC = new JButton("C 证书");
+            webWayB.setToolTipText("现在可用。正文加密，默认端口 54301。可传文字、图片和文件。");
+            webWayA.setToolTipText("还没做。正文不加密，默认端口 54302。点开只是占位，不会启动。");
+            webWayC.setToolTipText("还没做。要手机信任的证书。点开只是占位，不会启动。");
+            webWayB.addActionListener(e -> showWebWay('B'));
+            webWayA.addActionListener(e -> showWebWay('A'));
+            webWayC.addActionListener(e -> showWebWay('C'));
+            JPanel ways = new JPanel(new GridLayout(1, 3, UserConfig.s(6), 0));
+            ways.setOpaque(false);
+            ways.setAlignmentX(Component.LEFT_ALIGNMENT);
+            ways.add(webWayB);
+            ways.add(webWayA);
+            ways.add(webWayC);
+            webHintLabel = new JLabel(" ");
+            webHintLabel.setForeground(MUTED);
+            webHintLabel.setFont(webHintLabel.getFont().deriveFont((float) UserConfig.s(12)));
+            webHintLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            webStateLabel = new JLabel("未启动");
+            webStateLabel.setForeground(TEXT);
+            webStateLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            webPortField = new JTextField(6);
+            webPowerBtn = new JButton("启动");
+            webRefreshBtn = new JButton("刷新会话");
+            JPanel portRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+            portRow.setOpaque(false);
+            portRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+            JLabel portLabel = new JLabel("端口");
+            portLabel.setForeground(TEXT);
+            portRow.add(portLabel);
+            portRow.add(webPortField);
+            portRow.add(webPowerBtn);
+            portRow.add(webRefreshBtn);
+            JPanel north = new JPanel();
+            north.setLayout(new BoxLayout(north, BoxLayout.Y_AXIS));
+            north.setOpaque(false);
+            north.add(ways);
+            north.add(Box.createVerticalStrut(UserConfig.s(8)));
+            north.add(webHintLabel);
+            north.add(Box.createVerticalStrut(UserConfig.s(6)));
+            north.add(webStateLabel);
+            north.add(Box.createVerticalStrut(UserConfig.s(4)));
+            north.add(portRow);
+            int qrSide = UserConfig.s(280);
+            webQrPanel = new JPanel() {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    int w = getWidth();
+                    int h = getHeight();
+                    if (webQrImage == null) {
+                        g.setColor(MUTED);
+                        FontMetrics fm = g.getFontMetrics();
+                        String msg = webQrPlaceholder == null ? "" : webQrPlaceholder;
+                        g.drawString(msg, Math.max(8, (w - fm.stringWidth(msg)) / 2), h / 2);
+                        return;
+                    }
+                    int side = Math.min(w, h);
+                    if (side < 4) {
+                        return;
+                    }
+                    int x = (w - side) / 2;
+                    int y = (h - side) / 2;
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                            RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                    g2.drawImage(webQrImage, x, y, side, side, null);
+                    g2.dispose();
+                }
+            };
+            webQrPanel.setBackground(Color.WHITE);
+            webQrPanel.setPreferredSize(new Dimension(qrSide, qrSide));
+            webQrPanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            webQrPanel.setToolTipText("点击复制链接");
+            webQrPanel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    copyWebLink();
+                }
+            });
+            webUrlArea = new JTextArea();
+            webUrlArea.setEditable(false);
+            webUrlArea.setLineWrap(true);
+            webUrlArea.setWrapStyleWord(true);
+            webUrlArea.setRows(2);
+            webUrlArea.setBackground(BG);
+            webUrlArea.setForeground(new Color(0x15, 0x4F, 0xBF));
+            webUrlArea.setFont(webUrlArea.getFont().deriveFont((float) UserConfig.s(12)));
+            webUrlArea.setBorder(new EmptyBorder(UserConfig.s(6), UserConfig.s(6), UserConfig.s(6), UserConfig.s(6)));
+            webUrlArea.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            webUrlArea.setToolTipText("用默认浏览器打开");
+            webUrlArea.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    openWebLink();
+                }
+            });
+            box.add(north, BorderLayout.NORTH);
+            box.add(webQrPanel, BorderLayout.CENTER);
+            box.add(webUrlArea, BorderLayout.SOUTH);
+            webDialog.setContentPane(box);
+            webPowerBtn.addActionListener(e -> {
+                if (WebBridge.isRunning()) {
+                    WebBridge.stop();
+                    refreshRunningChrome();
+                    paintWebDialog();
+                } else {
+                    applyWebPort(true);
+                }
+            });
+            webRefreshBtn.addActionListener(e -> {
+                if (!WebBridge.isRunning()) {
+                    return;
+                }
+                WebBridge.refreshSession();
+                paintWebDialog();
+            });
+            webPortField.addActionListener(e -> applyWebPort(false));
+            webDialog.addWindowListener(new WindowAdapter() {
+                @Override
+                public void windowClosing(WindowEvent e) {
+                    if (webDialogTimer != null) {
+                        webDialogTimer.stop();
+                    }
+                }
+            });
+            webDialog.getRootPane().registerKeyboardAction(e -> hideWebDialog(),
+                    KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                    JComponent.WHEN_IN_FOCUSED_WINDOW);
+            webDialog.setMinimumSize(new Dimension(UserConfig.s(340), UserConfig.s(500)));
+            webDialog.pack();
+        }
+        if (webDialogTimer != null) {
+            webDialogTimer.stop();
+        }
+        webDialogTimer = new Timer(1000, e -> {
+            if (webDialog != null && webDialog.isVisible()) {
+                paintWebDialog();
+            }
+        });
+        webDialogTimer.start();
+        paintWebDialog();
+        webDialog.setLocationRelativeTo(frame);
+        webDialog.setVisible(true);
+        webDialog.toFront();
+    }
+
+    private static void hideWebDialog() {
+        if (webDialogTimer != null) {
+            webDialogTimer.stop();
+        }
+        if (webDialog != null) {
+            webDialog.setVisible(false);
+        }
+    }
+
+    private static void applyWebPort(boolean startIfStopped) {
+        if (webWayShown != 'B') {
+            return;
+        }
+        int port;
+        try {
+            port = Integer.parseInt(webPortField.getText().trim());
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(webDialog, "端口要在 1–65535", "兼容模式", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (port < 1 || port > 65535) {
+            JOptionPane.showMessageDialog(webDialog, "端口要在 1–65535", "兼容模式", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        UserConfig.setWebBridgePort(port);
+        try {
+            if (WebBridge.isRunning()) {
+                if (WebBridge.port() != port) {
+                    WebBridge.rebind(port);
+                }
+            } else if (startIfStopped) {
+                WebBridge.start(port);
+            }
+        } catch (Exception e) {
+            String msg = e.getMessage() == null ? "启动失败" : e.getMessage();
+            JOptionPane.showMessageDialog(webDialog, msg, "兼容模式", JOptionPane.ERROR_MESSAGE);
+        }
+        refreshRunningChrome();
+        paintWebDialog();
+    }
+
+    private static String selectedLanHost() {
+        if (comboIps == null || comboIps.getSelectedItem() == null) {
+            return "127.0.0.1";
+        }
+        String host = comboIps.getSelectedItem().toString().trim();
+        return host.isEmpty() ? "127.0.0.1" : host;
+    }
+
+    private static void showWebWay(char way) {
+        webWayShown = way == 'A' || way == 'C' ? way : 'B';
+        webCopiedUntil = 0;
+        paintWebDialog();
+    }
+
+    private static void styleWayButton(JButton button, boolean current) {
+        if (button == null) {
+            return;
+        }
+        button.setFocusPainted(false);
+        button.setOpaque(true);
+        button.setContentAreaFilled(true);
+        button.setBackground(current ? ACCENT : BG);
+        button.setForeground(current ? Color.WHITE : TEXT);
+    }
+
+    /** 切到 A/C 只换说明，不关正在跑的 B。 */
+    private static void paintWayChrome() {
+        boolean onB = webWayShown == 'B';
+        styleWayButton(webWayB, onB);
+        styleWayButton(webWayA, webWayShown == 'A');
+        styleWayButton(webWayC, webWayShown == 'C');
+        if (webHintLabel != null) {
+            String html = switch (webWayShown) {
+                case 'A' -> "<html>明文档还没接上。默认端口 54302，正文不加密。<br>点这里不会启动。</html>";
+                case 'C' -> "<html>证书档还没接上。要手机信任的 HTTPS 证书。<br>点这里不会启动。</html>";
+                default -> "<html>没装 App 的手机扫码。点二维码复制，点链接用浏览器打开。<br>可传文字、图片和文件，落到「下载/TextSend」。</html>";
+            };
+            webHintLabel.setText(html);
+        }
+        if (onB || webPowerBtn == null) {
+            if (webPowerBtn != null) {
+                webPowerBtn.setEnabled(true);
+            }
+            if (webPortField != null) {
+                webPortField.setEnabled(true);
+            }
+            return;
+        }
+        webPowerBtn.setEnabled(false);
+        webPowerBtn.setText("启动");
+        webRefreshBtn.setEnabled(false);
+        webPortField.setEnabled(false);
+        webPortField.setText(webWayShown == 'A' ? "54302" : "");
+        webStateLabel.setText(webWayShown == 'A' ? "A 明文还没做" : "C 证书还没做");
+        webQrImage = null;
+        webQrPlaceholder = webStateLabel.getText();
+        if (webUrlArea != null) {
+            webUrlArea.setText("");
+        }
+        if (webQrPanel != null) {
+            webQrPanel.repaint();
+        }
+    }
+
+    private static void paintWebDialog() {
+        if (webDialog == null || webStateLabel == null) {
+            return;
+        }
+        paintWayChrome();
+        if (webWayShown != 'B') {
+            return;
+        }
+        boolean on = WebBridge.isRunning();
+        String state;
+        if (System.currentTimeMillis() < webCopiedUntil) {
+            state = "已复制链接";
+        } else if (!on) {
+            state = "未启动";
+        } else if (!WebBridge.hasSession()) {
+            state = "会话已过期。点「刷新会话」再扫一次。";
+        } else {
+            state = "监听 0.0.0.0:" + WebBridge.port() + "  ·  手机 " + WebBridge.listenerCount();
+        }
+        webStateLabel.setText(state);
+        webPowerBtn.setText(on ? "停止" : "启动");
+        webRefreshBtn.setEnabled(on);
+        if (!webPortField.isFocusOwner()) {
+            int show = on ? WebBridge.port() : UserConfig.getWebBridgePort();
+            String text = Integer.toString(show);
+            if (!text.equals(webPortField.getText().trim())) {
+                webPortField.setText(text);
+            }
+        }
+        String url = on ? WebBridge.pageUrl(selectedLanHost()) : null;
+        if (url == null) {
+            webQrImage = null;
+            webQrPlaceholder = on ? "会话已过期，点「刷新会话」" : "启动后显示二维码";
+            webUrlArea.setText("");
+            webQrShown = null;
+            if (webQrPanel != null) {
+                webQrPanel.repaint();
+            }
+            return;
+        }
+        webUrlArea.setText(url);
+        if (url.equals(webQrShown) && webQrImage != null) {
+            return;
+        }
+        try {
+            webQrImage = QR_Util.createQRImage(url, 360);
+            webQrShown = url;
+        } catch (Exception e) {
+            webQrImage = null;
+            webQrPlaceholder = "二维码生成失败";
+            webQrShown = null;
+        }
+        if (webQrPanel != null) {
+            webQrPanel.repaint();
+        }
+    }
+
+    private static void copyWebLink() {
+        if (webUrlArea == null || webQrImage == null) {
+            return;
+        }
+        String url = webUrlArea.getText();
+        if (url == null || url.isBlank()) {
+            return;
+        }
+        copyText(url);
+        webCopiedUntil = System.currentTimeMillis() + 1200;
+        if (webStateLabel != null) {
+            webStateLabel.setText("已复制链接");
+        }
+    }
+
+    private static void openWebLink() {
+        if (webUrlArea == null) {
+            return;
+        }
+        String url = webUrlArea.getText();
+        if (url == null || url.isBlank()) {
+            return;
+        }
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(URI.create(url));
+                return;
+            }
+        } catch (Exception ignored) {
+            // 下面统一提示
+        }
+        if (webStateLabel != null) {
+            webStateLabel.setText("打不开默认浏览器");
+        }
+    }
+
     private static void showHelp() {
         String text = """
                 TextSend PC  ·  协议 v1  ·  %s
@@ -3529,6 +3945,7 @@ public class TextSendMain {
                 · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
+                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书。现在只有 B 可用（默认端口 54301）。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。安卓和电脑客户端仍用「二维码」。有 v1 客户端时「发送」仍走原来的连接。
                 · 「在线」：待授权和已连接。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台。
                 · 「设置」：探测、限流、冷却、黑名单、人数上限。
                 · 「帮助」：本页。F1 同样。
@@ -3596,7 +4013,7 @@ public class TextSendMain {
                 —— 二维码 ——
                 · 左键启动会弹出二维码；有客户端连上后自动关闭。
                 · 点「二维码」手动打开则保持显示，连上也不关。Esc 关闭。
-                · 设置里可开「二维码失焦自动关闭」：点到其它窗口/软件时关掉（默认关）。
+                · 设置里「弹出窗口失焦即关」默认开：点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。
                 · 高 UI 缩放下二维码默认完整显示；可拖动窗口边角放大，始终整张码可见可扫。
 
                 —— 配置文件 ——
@@ -4952,6 +5369,59 @@ public class TextSendMain {
                 areaMessage.requestFocusInWindow();
             }
         }, AWTEvent.MOUSE_EVENT_MASK);
+        Toolkit.getDefaultToolkit().addAWTEventListener(ev -> {
+            if (!(ev instanceof WindowEvent we) || we.getID() != WindowEvent.WINDOW_DEACTIVATED) {
+                return;
+            }
+            if (!UserConfig.isPopupsCloseOnFocusLost()) {
+                return;
+            }
+            Window w = we.getWindow();
+            if (!(w instanceof JDialog) || w == frame || !w.isShowing()) {
+                return;
+            }
+            Window next = we.getOppositeWindow();
+            if (next != null && windowOwns(w, next)) {
+                return;
+            }
+            SwingUtilities.invokeLater(() -> {
+                Window focused = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusedWindow();
+                if (focused == w || (focused != null && windowOwns(w, focused))) {
+                    return;
+                }
+                dismissPopup(w);
+            });
+        }, AWTEvent.WINDOW_EVENT_MASK);
+    }
+
+    /** child 是否由 parent 拥有（设置里再弹出确认框时，不要把设置一起关掉）。 */
+    private static boolean windowOwns(Window parent, Window child) {
+        for (Window w = child; w != null; w = w.getOwner()) {
+            if (w == parent) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void dismissPopup(Window w) {
+        if (w == null || !w.isShowing() || w == frame) {
+            return;
+        }
+        if (w == webDialog) {
+            hideWebDialog();
+            return;
+        }
+        if (w == qrDialog) {
+            closeQrDialog();
+            return;
+        }
+        if (w instanceof JDialog dialog
+                && dialog.getDefaultCloseOperation() == WindowConstants.DISPOSE_ON_CLOSE) {
+            dialog.dispose();
+            return;
+        }
+        w.setVisible(false);
     }
 
     private static boolean offerPasteImage(BufferedImage img) {
@@ -5095,17 +5565,6 @@ public class TextSendMain {
                         qrDialog = null;
                     }
                 }
-
-                @Override
-                public void windowDeactivated(WindowEvent e) {
-                    if (!UserConfig.isQrCloseOnFocusLost()) {
-                        return;
-                    }
-                    if (qrDialog != null && e.getWindow() == qrDialog) {
-                        // 失焦：点到主窗口、其它对话框或其它软件时关掉
-                        SwingUtilities.invokeLater(TextSendMain::closeQrDialog);
-                    }
-                }
             });
 
             JPanel panel = new JPanel(new BorderLayout(0, UserConfig.s(8)));
@@ -5132,7 +5591,18 @@ public class TextSendMain {
                 }
             };
             qrPanel.setBackground(Color.WHITE);
-            qrPanel.setToolTipText("拖动窗口边角可放大二维码（始终显示完整图案）");
+            qrPanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            qrPanel.setToolTipText("点击复制连接串；拖动窗口边角可放大（始终显示完整图案）");
+            qrPanel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (lastConnectUri == null || lastConnectUri.isEmpty()) {
+                        return;
+                    }
+                    copyText(lastConnectUri);
+                    flashStatus("已复制连接串");
+                }
+            });
             qrPanel.addComponentListener(new ComponentAdapter() {
                 @Override
                 public void componentResized(ComponentEvent e) {

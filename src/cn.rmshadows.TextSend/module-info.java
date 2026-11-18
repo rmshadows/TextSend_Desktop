@@ -9,6 +9,7 @@ module cn.rmshadows.TextSend {
 
 	requires java.datatransfer;
 	requires java.desktop;
+	requires jdk.httpserver;
 	requires com.google.zxing;
 	requires com.google.zxing.javase;
 	requires com.google.gson;

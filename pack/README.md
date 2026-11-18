@@ -133,7 +133,7 @@ wix extension add -g WixToolset.UI.wixext
 
 日常用无控制台/GUI 那个即可。查二维码、启动问题时用调试那个。
 
-自带 JRE 必须包含 **`jdk.charsets`**（三端 jpackage 都 `--add-modules`）。ZXing 初始化会要 `EUC_JP`；精简 runtime 缺这个模块时，jar（系统 JDK）能弹码，绿色包/安装包会静默失败。
+自带 JRE 必须包含 **`jdk.charsets`** 和 **`jdk.httpserver`**（三端 jpackage 都 `--add-modules`）。ZXing 初始化会要 `EUC_JP`；精简 runtime 缺 `jdk.charsets` 时，jar（系统 JDK）能弹码，绿色包/安装包会静默失败。缺 `jdk.httpserver` 时网页桥起不来。
 
 ### `.deb` 打两份
 

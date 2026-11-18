@@ -1,0 +1,797 @@
+package application;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import protocol.AesGcm;
+import protocol.B64;
+import protocol.FileNames;
+import protocol.Hkdf;
+import protocol.PasteUtil;
+import protocol.Protocol;
+
+import javax.imageio.ImageIO;
+import javax.swing.SwingUtilities;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * 网页桥 Way B：本机 HTTP，应用层 AES-GCM。不走 v1 的 TCP。
+ * 二维码把会话密钥放在 URL 的 # 后面，浏览器不会把它发给这里。
+ */
+public final class WebBridge {
+    public static final int DEFAULT_PORT = 54301;
+    public static final String INFO = "textsend-webbridge-v1";
+    static final long IDLE_MS = 60L * 60L * 1000L;
+    private static final int MAX_PLAIN = 64 * 1024;
+    private static final int MAX_SEALED = MAX_PLAIN + 4096;
+    /** 单个网页文件明文上限。密封后还要加上 nonce 和 tag。 */
+    private static final int MAX_FILE = 32 * 1024 * 1024;
+    private static final int MAX_FILE_SEALED = MAX_FILE + 64 * 1024;
+    private static final int MAX_CLIENTS = 8;
+    private static final long PING_SEC = 15;
+
+    private static final Object LOCK = new Object();
+    private static final SecureRandom RNG = new SecureRandom();
+    private static final ScheduledExecutorService TICK = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "web-bridge-idle");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static HttpServer server;
+    private static boolean shutdownHooked;
+    private static ExecutorService workers;
+    private static int boundPort;
+    private static String sid;
+    private static byte[] ikm;
+    private static byte[] aesKey;
+    private static long touched;
+    private static boolean tickStarted;
+    private static final List<SseClient> clients = new ArrayList<>();
+    /** 最近发给手机的密封事件。后连上的手机会补收。 */
+    private static final List<byte[]> outbound = new ArrayList<>();
+    private static final int MAX_OUTBOUND = 20;
+
+    private WebBridge() {
+    }
+
+    public static boolean isRunning() {
+        synchronized (LOCK) {
+            return server != null;
+        }
+    }
+
+    public static boolean hasSession() {
+        synchronized (LOCK) {
+            return aesKey != null;
+        }
+    }
+
+    public static int port() {
+        synchronized (LOCK) {
+            return boundPort;
+        }
+    }
+
+    public static int listenerCount() {
+        synchronized (LOCK) {
+            return clients.size();
+        }
+    }
+
+    /** 换网卡只改 host。会话过期或桥没开时返回 null。 */
+    public static String pageUrl(String host) {
+        synchronized (LOCK) {
+            if (server == null || aesKey == null || ikm == null || sid == null) {
+                return null;
+            }
+            String h = host == null ? "" : host.trim();
+            if (h.isEmpty()) {
+                h = "127.0.0.1";
+            }
+            if (h.indexOf(':') >= 0 && !h.startsWith("[")) {
+                h = "[" + h + "]";
+            }
+            return "http://" + h + ":" + boundPort + "/?s=" + sid + "#k=" + B64.enc(ikm);
+        }
+    }
+
+    public static void start(int port) throws IOException {
+        synchronized (LOCK) {
+            if (server != null && boundPort == port) {
+                return;
+            }
+        }
+        if (isRunning()) {
+            rebind(port);
+            return;
+        }
+        bind(port);
+        try {
+            mint();
+        } catch (RuntimeException e) {
+            shutdown(true);
+            throw e;
+        }
+    }
+
+    /** 只换监听端口，会话 id 和密钥不动。 */
+    public static void rebind(int port) throws IOException {
+        if (!isRunning()) {
+            start(port);
+            return;
+        }
+        synchronized (LOCK) {
+            if (server != null && boundPort == port) {
+                return;
+            }
+        }
+        shutdown(false);
+        bind(port);
+    }
+
+    public static void stop() {
+        shutdown(true);
+    }
+
+    /** 作废当前手机，换一套新的 s / k。桥要已经开着。 */
+    public static void refreshSession() {
+        if (!isRunning()) {
+            return;
+        }
+        dropClients("refreshed");
+        mint();
+    }
+
+    /**
+     * @return 1 已写入下行队列；0 会话无效；-1 文字超过 64KB
+     */
+    public static int pushText(String text) throws Exception {
+        if (text == null) {
+            return 0;
+        }
+        byte[] raw = text.getBytes(StandardCharsets.UTF_8);
+        if (raw.length > MAX_PLAIN) {
+            return -1;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("v", 1);
+        o.addProperty("type", "text");
+        o.addProperty("id", UUID.randomUUID().toString());
+        o.addProperty("ts", System.currentTimeMillis());
+        o.addProperty("body", text);
+        byte[] ev;
+        List<SseClient> copy;
+        synchronized (LOCK) {
+            if (aesKey == null) {
+                return 0;
+            }
+            byte[] sealed = AesGcm.seal(aesKey, o.toString().getBytes(StandardCharsets.UTF_8));
+            touched = System.currentTimeMillis();
+            ev = sse("msg", Base64.getEncoder().encodeToString(sealed));
+            outbound.add(ev);
+            while (outbound.size() > MAX_OUTBOUND) {
+                outbound.remove(0);
+            }
+            copy = new ArrayList<>(clients);
+        }
+        for (SseClient c : copy) {
+            if (!c.write(ev)) {
+                drop(c);
+            }
+        }
+        return 1;
+    }
+
+    private static void ensureHook() {
+        if (shutdownHooked) {
+            return;
+        }
+        shutdownHooked = true;
+        Runtime.getRuntime().addShutdownHook(new Thread(WebBridge::stop, "web-bridge-stop"));
+    }
+
+    private static void bind(int port) throws IOException {
+        if (port < 1 || port > 65535) {
+            throw new IOException("端口无效");
+        }
+        HttpServer hs;
+        try {
+            hs = HttpServer.create(new InetSocketAddress(port), 0);
+        } catch (IOException e) {
+            throw new IOException("端口 " + port + " 无法监听（可能被占用）", e);
+        }
+        hs.createContext("/", WebBridge::handle);
+        ExecutorService pool = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "web-bridge");
+            t.setDaemon(true);
+            return t;
+        });
+        hs.setExecutor(pool);
+        hs.start();
+        ensureHook();
+        synchronized (LOCK) {
+            server = hs;
+            workers = pool;
+            boundPort = port;
+            if (!tickStarted) {
+                tickStarted = true;
+                TICK.scheduleWithFixedDelay(WebBridge::tick, PING_SEC, PING_SEC, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    private static void mint() {
+        byte[] rawSid = new byte[16];
+        byte[] material = new byte[32];
+        RNG.nextBytes(rawSid);
+        RNG.nextBytes(material);
+        String id = B64.enc(rawSid);
+        byte[] key;
+        try {
+            key = Hkdf.derive(material, id.getBytes(StandardCharsets.UTF_8), INFO, 32);
+        } catch (Exception e) {
+            throw new IllegalStateException("会话密钥失败", e);
+        }
+        synchronized (LOCK) {
+            sid = id;
+            ikm = material;
+            aesKey = key;
+            touched = System.currentTimeMillis();
+            outbound.clear();
+        }
+    }
+
+    private static void tick() {
+        List<SseClient> copy;
+        boolean expire = false;
+        synchronized (LOCK) {
+            if (server == null) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (aesKey != null && clients.isEmpty() && now - touched >= IDLE_MS) {
+                expire = true;
+            }
+            copy = new ArrayList<>(clients);
+        }
+        if (expire) {
+            expireSession();
+            return;
+        }
+        byte[] ping = ": ping\n\n".getBytes(StandardCharsets.UTF_8);
+        for (SseClient c : copy) {
+            if (!c.write(ping)) {
+                drop(c);
+            }
+        }
+    }
+
+    private static void expireSession() {
+        dropClients("expired");
+        synchronized (LOCK) {
+            aesKey = null;
+            if (ikm != null) {
+                Arrays.fill(ikm, (byte) 0);
+            }
+            ikm = null;
+            outbound.clear();
+        }
+    }
+
+    private static void dropClients(String reason) {
+        List<SseClient> copy;
+        synchronized (LOCK) {
+            copy = new ArrayList<>(clients);
+            clients.clear();
+        }
+        byte[] bye = sse("bye", reason);
+        for (SseClient c : copy) {
+            c.write(bye);
+            c.close();
+        }
+    }
+
+    private static void shutdown(boolean clearSession) {
+        HttpServer hs;
+        ExecutorService pool;
+        List<SseClient> copy;
+        synchronized (LOCK) {
+            hs = server;
+            server = null;
+            pool = workers;
+            workers = null;
+            copy = new ArrayList<>(clients);
+            clients.clear();
+            if (clearSession) {
+                aesKey = null;
+                sid = null;
+                if (ikm != null) {
+                    Arrays.fill(ikm, (byte) 0);
+                }
+                ikm = null;
+                outbound.clear();
+            }
+        }
+        for (SseClient c : copy) {
+            c.close();
+        }
+        if (hs != null) {
+            hs.stop(0);
+        }
+        if (pool != null) {
+            pool.shutdownNow();
+        }
+    }
+
+    private static void handle(HttpExchange ex) {
+        try {
+            String path = ex.getRequestURI().getPath();
+            if (path == null || path.isEmpty()) {
+                path = "/";
+            }
+            if ("/".equals(path) || "/index.html".equals(path)) {
+                staticFile(ex, "index.html", "text/html; charset=utf-8");
+            } else if ("/bridge.js".equals(path)) {
+                staticFile(ex, "bridge.js", "text/javascript; charset=utf-8");
+            } else if ("/api/meta".equals(path)) {
+                meta(ex);
+            } else if ("/api/send".equals(path)) {
+                send(ex);
+            } else if ("/api/file".equals(path)) {
+                upload(ex);
+            } else if ("/api/events".equals(path)) {
+                events(ex);
+            } else {
+                text(ex, 404, "not found");
+            }
+        } catch (Exception e) {
+            System.err.println("Log: webbridge " + e.getMessage());
+            try {
+                text(ex, 500, "error");
+            } catch (IOException ignored) {
+                // 头已经发出去时（比如下行流）不能再回一包
+            }
+        }
+    }
+
+    private static void meta(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!sessionOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        byte[] body = "{\"v\":1,\"mode\":\"B\",\"encrypt\":true,\"pageVersion\":\"1\"}"
+                .getBytes(StandardCharsets.UTF_8);
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", "application/json; charset=utf-8");
+        h.set("Cache-Control", "no-store");
+        h.set("Referrer-Policy", "no-referrer");
+        ex.sendResponseHeaders(200, body.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(body);
+        }
+    }
+
+    private static void send(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] key;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return;
+            }
+            key = aesKey;
+        }
+        String lenHdr = ex.getRequestHeaders().getFirst("Content-Length");
+        if (lenHdr != null) {
+            try {
+                if (Long.parseLong(lenHdr.trim()) > MAX_SEALED) {
+                    text(ex, 413, "too big");
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                text(ex, 400, "length");
+                return;
+            }
+        }
+        byte[] buf;
+        try (InputStream in = ex.getRequestBody()) {
+            buf = in.readNBytes(MAX_SEALED + 1);
+        }
+        if (buf.length == 0 || buf.length > MAX_SEALED) {
+            text(ex, buf.length > MAX_SEALED ? 413 : 400, "body");
+            return;
+        }
+        byte[] plain;
+        try {
+            plain = AesGcm.open(key, buf);
+        } catch (Exception e) {
+            text(ex, 400, "seal");
+            return;
+        }
+        if (plain.length > MAX_PLAIN + 1024) {
+            text(ex, 413, "too big");
+            return;
+        }
+        String body;
+        try {
+            JsonObject obj = JsonParser.parseString(new String(plain, StandardCharsets.UTF_8)).getAsJsonObject();
+            if (!obj.has("v") || obj.get("v").getAsInt() != 1
+                    || !obj.has("type") || !"text".equals(obj.get("type").getAsString())
+                    || !obj.has("body") || !obj.get("body").isJsonPrimitive()) {
+                text(ex, 400, "type");
+                return;
+            }
+            body = obj.get("body").getAsString();
+        } catch (RuntimeException e) {
+            text(ex, 400, "json");
+            return;
+        }
+        if (body.isEmpty() || body.getBytes(StandardCharsets.UTF_8).length > MAX_PLAIN) {
+            text(ex, body.isEmpty() ? 400 : 413, "text");
+            return;
+        }
+        synchronized (LOCK) {
+            if (aesKey == key) {
+                touched = System.currentTimeMillis();
+            }
+        }
+        String paste = body;
+        SwingUtilities.invokeLater(() -> PasteUtil.pasteText(paste));
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    /** 手机网页上传一个已密封的文件。明文是 2 字节头长 + JSON 头 + 原始字节。 */
+    private static void upload(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] key;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return;
+            }
+            key = aesKey;
+        }
+        String lenHdr = ex.getRequestHeaders().getFirst("Content-Length");
+        if (lenHdr != null) {
+            try {
+                if (Long.parseLong(lenHdr.trim()) > MAX_FILE_SEALED) {
+                    text(ex, 413, "too big");
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                text(ex, 400, "length");
+                return;
+            }
+        }
+        byte[] buf;
+        try (InputStream in = ex.getRequestBody()) {
+            buf = in.readNBytes(MAX_FILE_SEALED + 1);
+        }
+        if (buf.length < 28 || buf.length > MAX_FILE_SEALED) {
+            text(ex, buf.length > MAX_FILE_SEALED ? 413 : 400, "body");
+            return;
+        }
+        byte[] plain;
+        try {
+            plain = AesGcm.open(key, buf);
+        } catch (Exception e) {
+            text(ex, 400, "seal");
+            return;
+        }
+        if (plain.length < 2 || plain.length > MAX_FILE + 65535) {
+            text(ex, 413, "too big");
+            return;
+        }
+        int headLen = ((plain[0] & 0xff) << 8) | (plain[1] & 0xff);
+        if (headLen < 2 || headLen > 8192 || 2 + headLen > plain.length) {
+            text(ex, 400, "head");
+            return;
+        }
+        String name;
+        String rel;
+        boolean clip;
+        try {
+            JsonObject obj = JsonParser.parseString(new String(plain, 2, headLen, StandardCharsets.UTF_8)).getAsJsonObject();
+            if (!obj.has("v") || obj.get("v").getAsInt() != 1
+                    || !obj.has("type") || !"file".equals(obj.get("type").getAsString())) {
+                text(ex, 400, "type");
+                return;
+            }
+            name = obj.has("name") && obj.get("name").isJsonPrimitive() ? obj.get("name").getAsString() : "";
+            rel = obj.has("rel") && obj.get("rel").isJsonPrimitive() ? obj.get("rel").getAsString() : "";
+            clip = obj.has("clip") && obj.get("clip").isJsonPrimitive() && obj.get("clip").getAsBoolean();
+        } catch (RuntimeException e) {
+            text(ex, 400, "json");
+            return;
+        }
+        byte[] data = Arrays.copyOfRange(plain, 2 + headLen, plain.length);
+        if (data.length > MAX_FILE) {
+            text(ex, 413, "too big");
+            return;
+        }
+        Path saved;
+        try {
+            saved = placeUpload(name, rel, data);
+        } catch (IOException e) {
+            text(ex, 400, "path");
+            return;
+        }
+        synchronized (LOCK) {
+            if (aesKey == key) {
+                touched = System.currentTimeMillis();
+            }
+        }
+        String shown = saved.getFileName().toString();
+        boolean wantClip = clip && data.length > 0 && data.length <= Protocol.CLIPBOARD_IMAGE_MAX
+                && FileNames.isImageName(shown);
+        BufferedImage image = null;
+        if (wantClip) {
+            try {
+                image = ImageIO.read(new ByteArrayInputStream(data));
+            } catch (IOException ignored) {
+                image = null;
+            }
+        }
+        BufferedImage clipImage = image;
+        SwingUtilities.invokeLater(() -> {
+            boolean onClip = clipImage != null && PasteUtil.setClipboardImage(clipImage);
+            TextSendMain.noteWeb(onClip ? "收到图片 " + shown + "，已放入剪贴板" : "收到文件 " + shown);
+        });
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static Path placeUpload(String name, String rel, byte[] data) throws IOException {
+        Path root = FileNames.inboxDir();
+        Path dest;
+        if (rel != null && !rel.isBlank()) {
+            String safe = FileNames.sanitizeRelPath(rel);
+            if (safe == null) {
+                throw new IOException("path");
+            }
+            dest = FileNames.resolveUnder(root, safe);
+            Path parent = dest.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            if (Files.exists(dest)) {
+                dest = FileNames.unique(parent == null ? root : parent, dest.getFileName().toString());
+            }
+        } else {
+            String safeName = FileNames.sanitize(name == null || name.isBlank() ? "file" : name);
+            dest = FileNames.unique(root, safeName);
+        }
+        Files.write(dest, data);
+        return dest;
+    }
+
+    private static void events(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        String seen;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return;
+            }
+            if (clients.size() >= MAX_CLIENTS) {
+                text(ex, 429, "busy");
+                return;
+            }
+            seen = sid;
+            touched = System.currentTimeMillis();
+        }
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", "text/event-stream; charset=utf-8");
+        h.set("Cache-Control", "no-store");
+        h.set("Connection", "keep-alive");
+        h.set("Referrer-Policy", "no-referrer");
+        ex.sendResponseHeaders(200, 0);
+        SseClient client = new SseClient(ex);
+        try {
+            if (!client.write("retry: 2000\n\n".getBytes(StandardCharsets.UTF_8))) {
+                return;
+            }
+            List<byte[]> backlog;
+            synchronized (LOCK) {
+                if (server == null || aesKey == null || !seen.equals(sid)) {
+                    return;
+                }
+                clients.add(client);
+                backlog = new ArrayList<>(outbound);
+            }
+            for (byte[] ev : backlog) {
+                if (!client.write(ev)) {
+                    return;
+                }
+            }
+            client.awaitClose();
+        } finally {
+            drop(client);
+        }
+    }
+
+    private static boolean sessionOk(HttpExchange ex) {
+        synchronized (LOCK) {
+            return sameSid(query(ex, "s")) && aesKey != null;
+        }
+    }
+
+    private static boolean sameSid(String got) {
+        if (got == null || sid == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                got.getBytes(StandardCharsets.UTF_8),
+                sid.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void staticFile(HttpExchange ex, String name, String type) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod()) && !"HEAD".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] body = resource(name);
+        if (body == null) {
+            text(ex, 500, "missing page");
+            return;
+        }
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", type);
+        h.set("Cache-Control", "no-store");
+        h.set("Referrer-Policy", "no-referrer");
+        h.set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, "HEAD".equals(ex.getRequestMethod()) ? -1 : body.length);
+        if (!"HEAD".equals(ex.getRequestMethod())) {
+            try (OutputStream os = ex.getResponseBody()) {
+                os.write(body);
+            }
+        } else {
+            ex.close();
+        }
+    }
+
+    private static byte[] resource(String name) throws IOException {
+        InputStream in = WebBridge.class.getResourceAsStream("/webbridge/" + name);
+        if (in == null) {
+            in = WebBridge.class.getResourceAsStream("/resources/webbridge/" + name);
+        }
+        if (in == null) {
+            return null;
+        }
+        try (InputStream ok = in) {
+            return ok.readAllBytes();
+        }
+    }
+
+    private static void drop(SseClient c) {
+        synchronized (LOCK) {
+            clients.remove(c);
+        }
+        c.close();
+    }
+
+    private static byte[] sse(String event, String data) {
+        return ("event: " + event + "\ndata: " + data + "\n\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String query(HttpExchange ex, String name) {
+        String q = ex.getRequestURI().getRawQuery();
+        if (q == null || q.isEmpty()) {
+            return null;
+        }
+        for (String part : q.split("&")) {
+            int i = part.indexOf('=');
+            String rawKey = i < 0 ? part : part.substring(0, i);
+            String rawVal = i < 0 ? "" : part.substring(i + 1);
+            String key = URLDecoder.decode(rawKey, StandardCharsets.UTF_8);
+            if (name.equals(key)) {
+                return URLDecoder.decode(rawVal, StandardCharsets.UTF_8);
+            }
+        }
+        return null;
+    }
+
+    private static void text(HttpExchange ex, int code, String body) throws IOException {
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(code, b.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(b);
+        }
+    }
+
+    private static final class SseClient {
+        final HttpExchange ex;
+        final OutputStream out;
+        final CountDownLatch done = new CountDownLatch(1);
+        boolean closed;
+
+        SseClient(HttpExchange ex) {
+            this.ex = ex;
+            this.out = ex.getResponseBody();
+        }
+
+        boolean write(byte[] b) {
+            synchronized (this) {
+                if (closed) {
+                    return false;
+                }
+                try {
+                    out.write(b);
+                    out.flush();
+                    return true;
+                } catch (IOException e) {
+                    closed = true;
+                    done.countDown();
+                    return false;
+                }
+            }
+        }
+
+        void awaitClose() {
+            try {
+                done.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        void close() {
+            synchronized (this) {
+                if (closed) {
+                    done.countDown();
+                    return;
+                }
+                closed = true;
+                try {
+                    out.close();
+                } catch (IOException ignored) {
+                    // 对方已经断开
+                }
+                ex.close();
+                done.countDown();
+            }
+        }
+    }
+}
