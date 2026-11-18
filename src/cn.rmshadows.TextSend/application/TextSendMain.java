@@ -2096,13 +2096,13 @@ public class TextSendMain {
         announce.setAlignmentX(Component.LEFT_ALIGNMENT);
         announce.setSelected(UserConfig.isLanDiscoverAnnounce());
         announce.setEnabled(UserConfig.isLanDiscover());
-        announce.setToolTipText("默认开，大约每 2 秒广播一次。关掉后服务端不主动喊，只在客户端发探测时回复。");
+        announce.setToolTipText("默认开，大约每 1 秒广播一次。关掉后服务端不主动喊，只在客户端发探测时回复。");
 
         JCheckBox pause = new JCheckBox("有连接时关闭探测");
         pause.setAlignmentX(Component.LEFT_ALIGNMENT);
         pause.setSelected(UserConfig.isLanDiscoverPause());
         pause.setEnabled(UserConfig.isLanDiscover());
-        pause.setToolTipText("默认关。已有连接时暂停广播和探测。");
+        pause.setToolTipText("默认开。已有连接时暂停广播和探测。");
 
         JCheckBox followPort = new JCheckBox("探测端口跟随连接端口");
         followPort.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -2222,7 +2222,7 @@ public class TextSendMain {
             oldScale[0] = UserConfig.getUiScale();
             UserConfig.resetToDefaults();
             discover.setSelected(false);
-            pause.setSelected(false);
+            pause.setSelected(true);
             pause.setEnabled(false);
             announce.setSelected(true);
             announce.setEnabled(false);
@@ -2363,7 +2363,7 @@ public class TextSendMain {
                     : "授权请求已到，但局域网探测是关的"));
             return;
         }
-        String host = req.host == null ? "" : req.host.trim();
+        String host = authHostKey(req.host);
         PendingAuth already = authPendingByHost.get(host);
         if (already != null && already.req != null && req.nonce != null
                 && java.util.Arrays.equals(already.req.nonce, req.nonce)) {
@@ -2380,20 +2380,22 @@ public class TextSendMain {
         long now = System.currentTimeMillis();
         Long until = authCooldownUntil.get(host);
         if (until != null && until > now) {
-            denyAuthSilent(req);
             long left = Math.max(1L, (until - now + 999) / 1000);
+            denyAuthSilent(req, (int) Math.min(LanAuth.DENY_HARD - 1, left));
             SwingUtilities.invokeLater(() -> flashStatus("授权冷却中（约 " + left + " 秒），未弹出"));
             return;
         }
         if (!noteAuthHit(host, now)) {
-            denyAuthSilent(req);
+            Long again = authCooldownUntil.get(host);
+            long left = again == null ? 0L : Math.max(0L, (again - now + 999) / 1000);
+            denyAuthSilent(req, left <= 0 ? 0 : (int) Math.min(LanAuth.DENY_HARD - 1, left));
             SwingUtilities.invokeLater(() -> flashStatus("授权请求过频，已冷却，未弹出"));
             return;
         }
         boolean firstSlot = !authPendingByHost.containsKey(host) && authPendingByHost.isEmpty();
         PendingAuth prev = authPendingByHost.put(host, new PendingAuth(req, now));
         if (prev != null && prev.req != null && !java.util.Arrays.equals(prev.req.nonce, req.nonce)) {
-            denyAuthSilent(prev.req);
+            denyAuthSilent(prev.req, 0);
         }
         trimAuthPendingOverflow();
         if (req.tcpReply == null) {
@@ -2422,10 +2424,7 @@ public class TextSendMain {
             hits.pollFirst();
         }
         if (hits.size() >= limit) {
-            int cool = UserConfig.getAuthCooldownSec();
-            if (cool > 0) {
-                authCooldownUntil.put(host, now + cool * 1000L);
-            }
+            applyAuthCooldown(host);
             return false;
         }
         hits.addLast(now);
@@ -2464,18 +2463,30 @@ public class TextSendMain {
     }
 
     private static void denyAuthSilent(LanAuth.Request req) {
+        denyAuthSilent(req, LanAuth.DENY_HARD);
+    }
+
+    private static void denyAuthSilent(LanAuth.Request req, int waitSec) {
         if (req == null) {
             return;
         }
-        replyAuth(req, LanAuth.encodeDeny(req.nonce));
+        replyAuth(req, LanAuth.encodeDeny(req.nonce, waitSec));
+    }
+
+    /** 待授权、冷却、限流共用的地址键。 */
+    private static String authHostKey(String host) {
+        return TsServer.normalizeHost(host).toLowerCase(java.util.Locale.ROOT);
     }
 
     private static void applyAuthCooldown(String host) {
+        String key = authHostKey(host);
         int cool = UserConfig.getAuthCooldownSec();
-        if (cool <= 0 || host == null || host.isBlank()) {
+        if (cool <= 0 || key.isEmpty()) {
             return;
         }
-        authCooldownUntil.put(host, System.currentTimeMillis() + cool * 1000L);
+        authCooldownUntil.put(key, System.currentTimeMillis() + cool * 1000L);
+        // 冷却代替滑动窗口。结束后可以再请求，不会和剩余次数叠成一直拒绝。
+        authHitsByHost.remove(key);
     }
 
     private static void clearAuthPending(boolean denyAll) {
@@ -2551,7 +2562,8 @@ public class TextSendMain {
     }
 
     private static void decideAuth(String host, boolean allow, boolean blacklist) {
-        if (host == null || host.isBlank()) {
+        host = authHostKey(host);
+        if (host.isEmpty()) {
             return;
         }
         PendingAuth pending = authPendingByHost.remove(host);
@@ -2576,12 +2588,14 @@ public class TextSendMain {
             flashStatus("已允许 " + name);
         } else {
             TsServer.revokeLanGrantCurrent(req.host);
-            denyAuthSilent(req);
-            applyAuthCooldown(host);
             if (blacklist) {
+                denyAuthSilent(req, LanAuth.DENY_HARD);
                 flashStatus("已拉黑 " + name);
             } else {
-                flashStatus("已拒绝 " + name);
+                applyAuthCooldown(host);
+                int cool = Math.max(0, UserConfig.getAuthCooldownSec());
+                denyAuthSilent(req, Math.min(LanAuth.DENY_HARD - 1, cool));
+                flashStatus(cool > 0 ? "已拒绝 " + name + "，冷却 " + cool + " 秒" : "已拒绝 " + name);
             }
         }
         refreshAuthPending();
@@ -2878,7 +2892,15 @@ public class TextSendMain {
         int udpPort = UserConfig.getLanDiscoverPort();
         Thread t = new Thread(() -> {
             try {
-                LanAuth.Grant grant = LanDiscover.requestAuth(host, udpPort);
+                LanAuth.Grant grant;
+                try {
+                    grant = LanDiscover.requestAuthTcp(host, tcpPort);
+                } catch (Exception tcpErr) {
+                    if (LanAuth.isDenied(tcpErr)) {
+                        throw tcpErr;
+                    }
+                    grant = LanDiscover.requestAuth(host, udpPort);
+                }
                 int port = grant.tcpPort > 0 ? grant.tcpPort : tcpPort;
                 String uri = TsUri.format(host, port, grant.pskB64());
                 SwingUtilities.invokeLater(() -> {
@@ -2890,9 +2912,13 @@ public class TextSendMain {
                     startClient();
                 });
             } catch (Exception e) {
-                String msg = e.getMessage() == null ? "授权失败" : e.getMessage();
-                if (e instanceof java.util.concurrent.TimeoutException
-                        || (e.getCause() instanceof java.util.concurrent.TimeoutException)) {
+                Throwable shown = e;
+                if (e instanceof java.util.concurrent.ExecutionException && e.getCause() != null) {
+                    shown = e.getCause();
+                }
+                String msg = shown.getMessage() == null ? "授权失败" : shown.getMessage();
+                if (shown instanceof java.util.concurrent.TimeoutException
+                        || e instanceof java.util.concurrent.TimeoutException) {
                     msg = "等待服务端允许超时";
                 }
                 String tip = msg;
@@ -2942,7 +2968,7 @@ public class TextSendMain {
                 · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，点开后「允许 / 拒绝 / 拉黑」。
                 · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 120 秒）、黑名单。
                 · 连接是 TCP，发现设备是 UDP（广播不能走 TCP）。默认「探测端口跟随连接端口」，两边同号。
-                · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行同号 UDP。可勾「有连接时关闭探测」。
+                · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行同号 UDP。「有连接时关闭探测」默认开。
                 · 服务端「已连接」列表可对某一客户端「踢下线」，无需重启服务。
                 · 不要只填 IP。PIN 路径用 8 位短码，扫码用长密钥。
                 · 握手成功后才清空输入框；失败或点断开则保留连接串。

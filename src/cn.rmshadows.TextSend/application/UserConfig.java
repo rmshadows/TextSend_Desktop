@@ -37,7 +37,8 @@ public final class UserConfig {
     private static String customPin = "";
     private static boolean rememberLastClient = false;
     private static boolean lanDiscover = false;
-    private static boolean lanDiscoverPause = false;
+    /** 有连接时停止探测。默认开 */
+    private static boolean lanDiscoverPause = true;
     /** 关了就不周期广播，只在收到客户端探测时回复 */
     private static boolean lanDiscoverAnnounce = true;
     private static int lanDiscoverPort = 54300;
@@ -128,7 +129,7 @@ public final class UserConfig {
             }
             rememberLastClient = Boolean.parseBoolean(p.getProperty("rememberLastClient", "false"));
             lanDiscover = Boolean.parseBoolean(p.getProperty("lanDiscover", "false"));
-            lanDiscoverPause = Boolean.parseBoolean(p.getProperty("lanDiscoverPause", "false"));
+            lanDiscoverPause = Boolean.parseBoolean(p.getProperty("lanDiscoverPause", "true"));
             lanDiscoverAnnounce = Boolean.parseBoolean(p.getProperty("lanDiscoverAnnounce", "true"));
             lanDiscoverPort = parsePort(54300, p.getProperty("lanDiscoverPort", "54300"));
             // 旧默认 54301 收成和连接相同的 54300。单独改过的端口不动。
@@ -235,7 +236,7 @@ public final class UserConfig {
         customPin = "";
         rememberLastClient = false;
         lanDiscover = false;
-        lanDiscoverPause = false;
+        lanDiscoverPause = true;
         lanDiscoverAnnounce = true;
         lanDiscoverPort = 54300;
         lanDiscoverPortFollowListen = true;
@@ -556,6 +557,9 @@ public final class UserConfig {
         String h = host.trim();
         if (h.startsWith("[") && h.endsWith("]") && h.length() > 2) {
             h = h.substring(1, h.length() - 1);
+        }
+        if (h.length() > 7 && h.regionMatches(true, 0, "::ffff:", 0, 7)) {
+            h = h.substring(7);
         }
         return h.toLowerCase(Locale.ROOT);
     }

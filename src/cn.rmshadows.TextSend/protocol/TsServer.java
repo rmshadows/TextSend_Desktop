@@ -483,6 +483,43 @@ public final class TsServer implements Runnable {
         return Arrays.copyOf(g.psk, g.psk.length);
     }
 
+    /** 握手时按顺序试：先对上这个地址，再试同一张票记在别的网卡上的。 */
+    public static final class GrantCandidate {
+        public final String host;
+        public final byte[] psk;
+        public final boolean forHost;
+
+        GrantCandidate(String host, byte[] psk, boolean forHost) {
+            this.host = host;
+            this.psk = psk;
+            this.forHost = forHost;
+        }
+    }
+
+    List<GrantCandidate> grantCandidates(String host) {
+        pruneGrants();
+        String h = normalizeHost(host);
+        long now = System.currentTimeMillis();
+        List<GrantCandidate> out = new ArrayList<>();
+        GrantEntry exact = h.isEmpty() ? null : lanGrants.get(h);
+        if (exact != null && exact.expireAt > now) {
+            out.add(new GrantCandidate(h, Arrays.copyOf(exact.psk, exact.psk.length), true));
+        }
+        for (Map.Entry<String, GrantEntry> e : lanGrants.entrySet()) {
+            if (e.getKey().equals(h) || e.getValue().expireAt <= now) {
+                continue;
+            }
+            out.add(new GrantCandidate(e.getKey(),
+                    Arrays.copyOf(e.getValue().psk, e.getValue().psk.length), false));
+        }
+        return out;
+    }
+
+    public static List<GrantCandidate> grantCandidatesCurrent(String host) {
+        TsServer s = instance;
+        return s == null ? List.of() : s.grantCandidates(host);
+    }
+
     void consumeGrant(String host, byte[] psk) {
         String h = normalizeHost(host);
         if (h.isEmpty() || psk == null) {

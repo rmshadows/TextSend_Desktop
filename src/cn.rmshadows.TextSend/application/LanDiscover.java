@@ -35,8 +35,9 @@ public final class LanDiscover {
     private static final byte[] MAGIC = "TSD1".getBytes(StandardCharsets.US_ASCII);
     private static final byte VERSION = 1;
     private static final int NAME_MAX = 48;
-    private static final long INTERVAL_MS = 2000L;
-    private static final long PEER_TTL_MS = 7000L;
+    private static final long INTERVAL_MS = 1000L;
+    /** 超过这个时间没再收到广播就从列表去掉。强杀来不及发下线包，只能靠超时。 */
+    private static final long PEER_TTL_MS = 2500L;
 
     private static final byte[] INSTANCE_ID = new byte[8];
     private static final Map<String, PeerSeen> PEERS = new LinkedHashMap<>();
@@ -290,6 +291,10 @@ public final class LanDiscover {
             throw new IllegalStateException("请先打开局域网探测");
         }
         return LanAuth.requestAuth(sock, host, udpPort, deviceName());
+    }
+
+    public static LanAuth.Grant requestAuthTcp(String host, int tcpPort) throws Exception {
+        return LanAuth.requestAuthTcp(host, tcpPort, deviceName());
     }
 
     public static void sendAuthPacket(String host, int port, byte[] packet) {

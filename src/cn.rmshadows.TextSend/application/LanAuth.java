@@ -3,14 +3,19 @@ package application;
 import protocol.B64;
 import protocol.Protocol;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +36,15 @@ public final class LanAuth {
     public static final int NAME_MAX = 48;
     public static final long GRANT_TTL_MS = 60_000L;
     public static final long REQUEST_WAIT_MS = 60_000L;
+    /** DENY 尾部两个字节：0xFFFF 表示拉黑或服务没开；其余是还能再请求的秒数。 */
+    public static final int DENY_HARD = 0xFFFF;
+
+    /** 对方拒绝了这次授权。冷却和拉黑用同一类，客户端据此不再改走别的通道。 */
+    public static final class AuthDeniedException extends IllegalStateException {
+        public AuthDeniedException(String message) {
+            super(message);
+        }
+    }
 
     private static final SecureRandom RNG = new SecureRandom();
     private static final ConcurrentHashMap<ByteBuffer, CompletableFuture<Grant>> WAITING = new ConcurrentHashMap<>();
@@ -122,12 +136,55 @@ public final class LanAuth {
     }
 
     public static byte[] encodeDeny(byte[] nonce) {
-        byte[] out = new byte[6 + NONCE_LEN];
+        return encodeDeny(nonce, DENY_HARD);
+    }
+
+    public static byte[] encodeDeny(byte[] nonce, int waitSec) {
+        int sec = waitSec < 0 ? DENY_HARD : Math.min(DENY_HARD, waitSec);
+        byte[] out = new byte[6 + NONCE_LEN + 2];
         System.arraycopy(MAGIC, 0, out, 0, 4);
         out[4] = VERSION;
         out[5] = TYPE_DENY;
         System.arraycopy(nonce, 0, out, 6, NONCE_LEN);
+        int o = 6 + NONCE_LEN;
+        out[o] = (byte) (sec >> 8);
+        out[o + 1] = (byte) sec;
         return out;
+    }
+
+    /** 旧包没有尾部秒数时返回 -1。 */
+    public static int denyWaitSec(byte[] buf, int length) {
+        int base = 6 + NONCE_LEN;
+        if (buf == null || length < base + 2) {
+            return -1;
+        }
+        return ((buf[base] & 0xFF) << 8) | (buf[base + 1] & 0xFF);
+    }
+
+    public static String denyMessage(int waitSec) {
+        if (waitSec < 0) {
+            return "对方拒绝了这次授权。冷却结束后可以再请求，没有拉黑";
+        }
+        if (waitSec == DENY_HARD) {
+            return "对方拒绝了授权";
+        }
+        if (waitSec == 0) {
+            return "对方拒绝了这次授权，可以再请求";
+        }
+        return "对方暂时拒绝，约 " + waitSec + " 秒后可以再请求（没有拉黑）";
+    }
+
+    public static boolean isDenied(Throwable e) {
+        for (Throwable c = e; c != null; c = c.getCause()) {
+            if (c instanceof AuthDeniedException) {
+                return true;
+            }
+            String m = c.getMessage();
+            if (m != null && (m.contains("拒绝") || m.contains("冷却"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static byte[] encodePending(byte[] nonce) {
@@ -153,7 +210,7 @@ public final class LanAuth {
         }
         if (type == TYPE_DENY) {
             WAITING.remove(key);
-            fut.completeExceptionally(new IllegalStateException("服务端拒绝了授权"));
+            fut.completeExceptionally(new AuthDeniedException(denyMessage(denyWaitSec(buf, length))));
             return;
         }
         if (type == TYPE_PENDING) {
@@ -193,6 +250,91 @@ public final class LanAuth {
             WAITING.remove(key);
             throw e;
         }
+    }
+
+    /**
+     * 连上对方的 TCP 端口直接写 TSA1，回复走同一条连接。
+     * 不依赖 UDP 回包，授权记下的地址和随后握手的来源地址一致。
+     */
+    public static Grant requestAuthTcp(String host, int tcpPort, String deviceName) throws Exception {
+        byte[] nonce = new byte[NONCE_LEN];
+        RNG.nextBytes(nonce);
+        byte[] packet = encodeRequest(deviceName, nonce);
+        Socket sock = new Socket();
+        try {
+            sock.connect(new InetSocketAddress(host, tcpPort), 5000);
+            sock.setSoTimeout((int) Math.min(Integer.MAX_VALUE, REQUEST_WAIT_MS));
+            OutputStream out = sock.getOutputStream();
+            out.write(packet);
+            out.flush();
+            InputStream in = sock.getInputStream();
+            byte[] head = readN(in, 6);
+            if (!isAuthPacket(head, 6)) {
+                throw new IllegalStateException("服务端没有按授权回应");
+            }
+            byte type = head[5];
+            if (type == TYPE_DENY) {
+                byte[] rest = readDenyRest(sock, in);
+                byte[] all = new byte[head.length + rest.length];
+                System.arraycopy(head, 0, all, 0, head.length);
+                System.arraycopy(rest, 0, all, head.length, rest.length);
+                throw new AuthDeniedException(denyMessage(denyWaitSec(all, all.length)));
+            }
+            if (type != TYPE_GRANT) {
+                throw new IllegalStateException("服务端没有按授权回应");
+            }
+            byte[] rest = readN(in, NONCE_LEN + Protocol.PSK_LEN + 2 + 4);
+            byte[] psk = Arrays.copyOfRange(rest, NONCE_LEN, NONCE_LEN + Protocol.PSK_LEN);
+            int o = NONCE_LEN + Protocol.PSK_LEN;
+            int port = ((rest[o] & 0xFF) << 8) | (rest[o + 1] & 0xFF);
+            return new Grant(psk, port);
+        } finally {
+            try {
+                sock.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private static byte[] readDenyRest(Socket sock, InputStream in) throws IOException {
+        byte[] nonce = readN(in, NONCE_LEN);
+        int prev = sock.getSoTimeout();
+        sock.setSoTimeout(200);
+        try {
+            byte[] extra = new byte[2];
+            int n = in.read(extra);
+            if (n == 1) {
+                int n2 = in.read(extra, 1, 1);
+                n = n2 < 0 ? 1 : 2;
+            }
+            if (n == 2) {
+                byte[] both = new byte[NONCE_LEN + 2];
+                System.arraycopy(nonce, 0, both, 0, NONCE_LEN);
+                System.arraycopy(extra, 0, both, NONCE_LEN, 2);
+                return both;
+            }
+            return nonce;
+        } catch (SocketTimeoutException e) {
+            return nonce;
+        } finally {
+            try {
+                sock.setSoTimeout(prev);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private static byte[] readN(InputStream in, int n) throws IOException {
+        byte[] buf = new byte[n];
+        int off = 0;
+        while (off < n) {
+            int r = in.read(buf, off, n - off);
+            if (r < 0) {
+                throw new java.io.EOFException("short read");
+            }
+            off += r;
+        }
+        return buf;
     }
 
     public static byte[] newPsk() {

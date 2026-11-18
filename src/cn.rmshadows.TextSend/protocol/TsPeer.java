@@ -224,29 +224,22 @@ public final class TsPeer implements Runnable {
             status("【握手】ECDH 完成，HKDF-SHA256  info=\"" + info + "\"  派生 aesKey(不打印)");
             aesKey = Hkdf.derive(shared, salt, info, Protocol.PSK_LEN);
         } else if ("psk".equals(mode)) {
-            String hostOnly = remoteHost();
-            byte[] grantPsk = TsServer.peekLanGrantPsk(hostOnly);
-            byte[] psk = grantPsk != null ? grantPsk : serverMaterial.psk;
-            status("【握手】PSK 模式：" + (grantPsk != null ? "局域网临时授权" : "扫码长密钥")
-                    + "，HKDF-SHA256  info=\"" + Protocol.HKDF_INFO_PSK + "\"");
+            status("【握手】PSK 模式：临时授权对不上时再用扫码长密钥");
             serverKx.addProperty("nonce", B64.enc(serverNonce));
             writePlain(Protocol.TYPE_KEY_EXCHANGE, serverKx.toString());
             status("【握手】发送 KEY_EXCHANGE  nonce");
-            byte[] clientNonce = B64.dec(clientKx.get("nonce").getAsString());
-            byte[] salt = concat(serverNonce, clientNonce);
-            aesKey = Hkdf.derive(psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
-            status("【握手】HKDF 派生 aesKey(不打印)");
-            // 先记下，AUTH_OK 成功后再消费，避免解密失败误废票
-            if (grantPsk != null) {
-                pendingGrantPsk = grantPsk;
-                pendingGrantHost = hostOnly;
-            }
         } else {
             throw new IOException("unsupported mode: " + mode);
         }
 
         status("【握手】等待 AUTH_OK（GCM）…");
-        Frame auth = readCipher(Protocol.TYPE_AUTH_OK);
+        Frame auth;
+        if ("psk".equals(mode)) {
+            byte[] clientNonce = B64.dec(clientKx.get("nonce").getAsString());
+            auth = openPskAuth(concat(serverNonce, clientNonce), remoteHost());
+        } else {
+            auth = readCipher(Protocol.TYPE_AUTH_OK);
+        }
         JsonObject clientAuth = parseJson(utf8(auth.payload));
         if (!"client".equals(clientAuth.get("role").getAsString())) {
             throw new IOException("bad AUTH_OK role");
@@ -1223,6 +1216,36 @@ public final class TsPeer implements Runnable {
             throw new IOException("expect type " + expectType + " got " + f.type);
         }
         byte[] plain = AesGcm.open(aesKey, f.payload);
+        return new Frame(f.version, f.type, plain);
+    }
+
+    /**
+     * 先试这个地址的临时授权，再试记在别的网卡上的票，最后才是扫码长密钥。
+     * 票对不上不能把扫码/PIN 一起判死。
+     */
+    private Frame openPskAuth(byte[] salt, String hostOnly) throws Exception {
+        Frame f = FrameIO.read(in);
+        if (f.type != Protocol.TYPE_AUTH_OK) {
+            throw new IOException("expect type " + Protocol.TYPE_AUTH_OK + " got " + f.type);
+        }
+        for (TsServer.GrantCandidate g : TsServer.grantCandidatesCurrent(hostOnly)) {
+            byte[] key = Hkdf.derive(g.psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
+            try {
+                byte[] plain = AesGcm.open(key, f.payload);
+                aesKey = key;
+                pendingGrantPsk = g.psk;
+                pendingGrantHost = g.host;
+                status(g.forHost ? "【握手】PSK 命中该地址的临时授权" : "【握手】PSK 命中另一网卡上的临时授权");
+                return new Frame(f.version, f.type, plain);
+            } catch (AEADBadTagException ignored) {
+            }
+        }
+        byte[] key = Hkdf.derive(serverMaterial.psk, salt, Protocol.HKDF_INFO_PSK, Protocol.PSK_LEN);
+        byte[] plain = AesGcm.open(key, f.payload);
+        aesKey = key;
+        pendingGrantPsk = null;
+        pendingGrantHost = null;
+        status("【握手】PSK 命中扫码长密钥");
         return new Frame(f.version, f.type, plain);
     }
 
