@@ -26,7 +26,8 @@ import java.util.Map;
  * 局域网 UDP 探测。默认关。
  * 包格式（三端一致）：TSD1 | version=1 | tcpPort uint16 BE | nameLen | name | 8 字节实例号。
  * 只广播正在监听的 TCP 端口和设备名，不带 PIN / 密钥。
- * 探测口默认 54300（和 TCP 连接同一端口号，协议仍是 UDP），可改；绑不上时 lastBindError 带占用提示。
+ * 探测口默认跟随连接端口（UserConfig：lanDiscoverPortFollowListen）；关掉跟随后可单独改。
+ * 协议仍是 UDP；绑不上时 lastBindError 带占用提示。
  * 「有连接时关闭」打开后，已经有会话就停广播、停监听。
  */
 public final class LanDiscover {

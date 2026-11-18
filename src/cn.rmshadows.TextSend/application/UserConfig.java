@@ -41,6 +41,8 @@ public final class UserConfig {
     /** 关了就不周期广播，只在收到客户端探测时回复 */
     private static boolean lanDiscoverAnnounce = true;
     private static int lanDiscoverPort = 54300;
+    /** 默认开：探测 UDP 口跟连接 TCP 口（listenPort）相同，设置里探测端口框禁用 */
+    private static boolean lanDiscoverPortFollowListen = true;
     /** 中键启动时的最大客户端数（左键仍为 1） */
     private static int maxClients = 7;
     /** 二维码失焦（点到别处/其它软件）时自动关闭 */
@@ -133,6 +135,9 @@ public final class UserConfig {
             if (lanDiscoverPort == 54301) {
                 lanDiscoverPort = 54300;
             }
+            // 缺省 true；旧配置没有该键时跟默认一致
+            lanDiscoverPortFollowListen = Boolean.parseBoolean(
+                    p.getProperty("lanDiscoverPortFollowListen", "true"));
             maxClients = parseMaxClients(p.getProperty("maxClients", "7"));
             qrCloseOnFocusLost = Boolean.parseBoolean(p.getProperty("qrCloseOnFocusLost", "false"));
             authRatePerMin = parseBoundedInt(p.getProperty("authRatePerMin", "3"), 3, 1, 60);
@@ -170,6 +175,7 @@ public final class UserConfig {
             p.setProperty("lanDiscoverPause", Boolean.toString(lanDiscoverPause));
             p.setProperty("lanDiscoverAnnounce", Boolean.toString(lanDiscoverAnnounce));
             p.setProperty("lanDiscoverPort", Integer.toString(lanDiscoverPort));
+            p.setProperty("lanDiscoverPortFollowListen", Boolean.toString(lanDiscoverPortFollowListen));
             p.setProperty("maxClients", Integer.toString(maxClients));
             p.setProperty("qrCloseOnFocusLost", Boolean.toString(qrCloseOnFocusLost));
             p.setProperty("authRatePerMin", Integer.toString(authRatePerMin));
@@ -232,6 +238,7 @@ public final class UserConfig {
         lanDiscoverPause = false;
         lanDiscoverAnnounce = true;
         lanDiscoverPort = 54300;
+        lanDiscoverPortFollowListen = true;
         maxClients = 7;
         qrCloseOnFocusLost = false;
         authRatePerMin = 3;
@@ -260,8 +267,16 @@ public final class UserConfig {
     }
 
     public static void setListenPort(int port) {
-        listenPort = port;
+        int next = port >= 1 && port <= 65535 ? port : 54300;
+        boolean changed = listenPort != next;
+        listenPort = next;
+        if (lanDiscoverPortFollowListen) {
+            lanDiscoverPort = listenPort;
+        }
         save();
+        if (changed && lanDiscoverPortFollowListen && lanDiscover) {
+            LanDiscover.boot();
+        }
     }
 
     public static boolean isPreferMini() {
@@ -367,13 +382,38 @@ public final class UserConfig {
         save();
     }
 
+    public static boolean isLanDiscoverPortFollowListen() {
+        return lanDiscoverPortFollowListen;
+    }
+
+    public static void setLanDiscoverPortFollowListen(boolean v) {
+        if (lanDiscoverPortFollowListen == v) {
+            return;
+        }
+        lanDiscoverPortFollowListen = v;
+        if (v) {
+            lanDiscoverPort = listenPort >= 1 && listenPort <= 65535 ? listenPort : 54300;
+        }
+        save();
+        if (lanDiscover) {
+            LanDiscover.boot();
+        }
+    }
+
     public static int getLanDiscoverPort() {
+        if (lanDiscoverPortFollowListen) {
+            return listenPort >= 1 && listenPort <= 65535 ? listenPort : 54300;
+        }
         return lanDiscoverPort >= 1 && lanDiscoverPort <= 65535 ? lanDiscoverPort : 54300;
     }
 
     public static boolean setLanDiscoverPort(int port) {
         if (port < 1 || port > 65535) {
             return false;
+        }
+        if (lanDiscoverPortFollowListen) {
+            // 跟随模式下改探测口无效；实际口始终等于连接口
+            return true;
         }
         if (lanDiscoverPort == port) {
             return true;

@@ -93,6 +93,8 @@ public class TextSendMain {
     private static final Color TEXT = new Color(0x1A1A1A);
     private static final Color MUTED = new Color(0x444444);
     private static final Color BORDER = new Color(0xB0B0B0);
+    /** 探测呼吸灯用（对齐 Android colorPrimary 偏蓝） */
+    private static final Color ACCENT = new Color(0x3D7EFF);
 
     private static String serverListenPort = String.valueOf(Protocol.DEFAULT_PORT);
     private static String preferIpAddr;
@@ -256,6 +258,10 @@ public class TextSendMain {
     private static String connectedSig = "";
     private static String authPendingSig = "";
     private static Timer lanPeerTimer;
+    /** 探测中标题前的呼吸灯（对齐 Android） */
+    private static JLabel lanProbeLight;
+    private static Timer lanProbeBreathTimer;
+    private static float lanProbeBreathPhase;
     /** 待授权：同 IP 只保留最新一条，不弹窗。 */
     private static final java.util.concurrent.ConcurrentHashMap<String, PendingAuth> authPendingByHost =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -2098,12 +2104,18 @@ public class TextSendMain {
         pause.setEnabled(UserConfig.isLanDiscover());
         pause.setToolTipText("默认关。已有连接时暂停广播和探测。");
 
+        JCheckBox followPort = new JCheckBox("探测端口跟随连接端口");
+        followPort.setAlignmentX(Component.LEFT_ALIGNMENT);
+        followPort.setSelected(UserConfig.isLanDiscoverPortFollowListen());
+        followPort.setEnabled(UserConfig.isLanDiscover());
+        followPort.setToolTipText("默认开。开着时探测 UDP 口等于主界面连接端口，输入框禁用；关掉后才能单独填探测端口。");
+
         JPanel portRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
         portRow.setOpaque(false);
         portRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         portRow.add(new JLabel("探测端口"));
         JTextField fieldDiscoPort = new JTextField(String.valueOf(UserConfig.getLanDiscoverPort()), 6);
-        fieldDiscoPort.setEnabled(UserConfig.isLanDiscover());
+        fieldDiscoPort.setEnabled(UserConfig.isLanDiscover() && !UserConfig.isLanDiscoverPortFollowListen());
         sizeDigitField(fieldDiscoPort, 6);
         portRow.add(fieldDiscoPort);
 
@@ -2149,17 +2161,24 @@ public class TextSendMain {
         blScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(96)));
 
         JLabel hint = new JLabel("<html><body style='width:360px'>平时请扫码。打开探测后：客户端点设备会进「待授权」列表，"
-                + "点开后允许才发一次性密钥。限流/冷却/黑名单防骚扰。探测和连接默认都是 54300"
-                + "（连接 TCP，探测 UDP）。防火墙若只放行 TCP，还要放行 UDP 54300。</body></html>");
+                + "点开后允许才发一次性密钥。限流/冷却/黑名单防骚扰。默认「探测端口跟随连接端口」，"
+                + "两边都是主界面那个口（连接 TCP，探测 UDP）。防火墙若只放行 TCP，还要放行同号 UDP。</body></html>");
         hint.setForeground(MUTED);
         hint.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        discover.addActionListener(e -> {
+        Runnable syncDiscoPortUi = () -> {
             boolean on = discover.isSelected();
+            boolean follow = followPort.isSelected();
             pause.setEnabled(on);
             announce.setEnabled(on);
-            fieldDiscoPort.setEnabled(on);
-        });
+            followPort.setEnabled(on);
+            fieldDiscoPort.setEnabled(on && !follow);
+            if (follow) {
+                fieldDiscoPort.setText(String.valueOf(UserConfig.getListenPort()));
+            }
+        };
+        discover.addActionListener(e -> syncDiscoPortUi.run());
+        followPort.addActionListener(e -> syncDiscoPortUi.run());
 
         panel.add(discover);
         panel.add(Box.createVerticalStrut(UserConfig.s(6)));
@@ -2167,6 +2186,8 @@ public class TextSendMain {
         panel.add(Box.createVerticalStrut(UserConfig.s(6)));
         panel.add(pause);
         panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(followPort);
+        panel.add(Box.createVerticalStrut(UserConfig.s(4)));
         panel.add(portRow);
         panel.add(Box.createVerticalStrut(UserConfig.s(10)));
         panel.add(maxRow);
@@ -2205,6 +2226,8 @@ public class TextSendMain {
             pause.setEnabled(false);
             announce.setSelected(true);
             announce.setEnabled(false);
+            followPort.setSelected(true);
+            followPort.setEnabled(false);
             fieldDiscoPort.setText("54300");
             fieldDiscoPort.setEnabled(false);
             fieldMaxClients.setText("7");
@@ -2227,16 +2250,20 @@ public class TextSendMain {
             }
             return;
         }
-        int port;
-        try {
-            port = Integer.parseInt(fieldDiscoPort.getText().trim());
-        } catch (Exception ex) {
-            flashStatus("探测端口须为 1–65535");
-            return;
-        }
-        if (!UserConfig.setLanDiscoverPort(port) && discover.isSelected()) {
-            flashStatus("探测端口须为 1–65535");
-            return;
+        boolean follow = followPort.isSelected();
+        UserConfig.setLanDiscoverPortFollowListen(follow);
+        if (!follow) {
+            int port;
+            try {
+                port = Integer.parseInt(fieldDiscoPort.getText().trim());
+            } catch (Exception ex) {
+                flashStatus("探测端口须为 1–65535");
+                return;
+            }
+            if (!UserConfig.setLanDiscoverPort(port) && discover.isSelected()) {
+                flashStatus("探测端口须为 1–65535");
+                return;
+            }
         }
         int maxN;
         try {
@@ -2729,14 +2756,16 @@ public class TextSendMain {
         boolean on = UserConfig.isLanDiscover();
         boolean paused = on && LanDiscover.pausedNow();
         String bindError = on && !paused ? LanDiscover.lastBindError() : "";
-        List<LanDiscover.Peer> peers = on && !paused && bindError.isBlank() ? LanDiscover.peers() : List.of();
+        boolean probing = on && !paused && bindError.isBlank();
+        List<LanDiscover.Peer> peers = probing ? LanDiscover.peers() : List.of();
         StringBuilder sig = new StringBuilder();
-        sig.append(on).append('|').append(paused).append('|').append(bindError);
+        sig.append(on).append('|').append(paused).append('|').append(bindError).append('|').append(probing);
         for (LanDiscover.Peer peer : peers) {
             sig.append('|').append(peer.name).append('\u0000').append(peer.host).append(':').append(peer.tcpPort);
         }
         String next = sig.toString();
         if (next.equals(lanPeerSig) && box.isVisible() == on) {
+            syncLanProbeBreath(probing);
             return;
         }
         if (!bindError.isBlank() && !lanPeerSig.contains(bindError)) {
@@ -2756,11 +2785,18 @@ public class TextSendMain {
             } else {
                 titleText = "局域网设备（点一下请求授权）";
             }
+            JPanel titleRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
+            titleRow.setOpaque(false);
+            titleRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+            lanProbeLight = new JLabel("●");
+            lanProbeLight.setFont(lanProbeLight.getFont().deriveFont((float) UserConfig.s(12)));
+            lanProbeLight.setVisible(probing);
+            titleRow.add(lanProbeLight);
             JLabel title = new JLabel(titleText);
             title.setForeground(MUTED);
             title.setFont(title.getFont().deriveFont((float) UserConfig.s(12)));
-            title.setAlignmentX(Component.LEFT_ALIGNMENT);
-            box.add(title);
+            titleRow.add(title);
+            box.add(titleRow);
             java.util.Map<String, Integer> idCounts = new java.util.HashMap<>();
             for (LanDiscover.Peer peer : peers) {
                 if (peer.idKey != null && !peer.idKey.isBlank()) {
@@ -2784,9 +2820,46 @@ public class TextSendMain {
                 btn.addActionListener(e -> applyDiscoveredPeer(peer.host, peer.tcpPort));
                 box.add(btn);
             }
+        } else {
+            lanProbeLight = null;
         }
+        syncLanProbeBreath(probing);
         box.revalidate();
         box.repaint();
+    }
+
+    /** 探测进行中：标题前一颗灯慢慢亮灭（对齐 Android）。 */
+    private static void syncLanProbeBreath(boolean active) {
+        if (!active) {
+            if (lanProbeBreathTimer != null) {
+                lanProbeBreathTimer.stop();
+                lanProbeBreathTimer = null;
+            }
+            if (lanProbeLight != null) {
+                lanProbeLight.setVisible(false);
+            }
+            lanProbeLight = null;
+            return;
+        }
+        if (lanProbeLight != null) {
+            lanProbeLight.setVisible(true);
+        }
+        if (lanProbeBreathTimer != null && lanProbeBreathTimer.isRunning()) {
+            return;
+        }
+        lanProbeBreathPhase = 0f;
+        lanProbeBreathTimer = new Timer(40, e -> {
+            JLabel light = lanProbeLight;
+            if (light == null || !light.isDisplayable()) {
+                return;
+            }
+            lanProbeBreathPhase += 0.075f;
+            float wave = 0.5f + 0.5f * (float) Math.sin(lanProbeBreathPhase);
+            int alpha = Math.round(255 * (0.15f + 0.85f * wave));
+            light.setForeground(new Color(ACCENT.getRed(), ACCENT.getGreen(), ACCENT.getBlue(), alpha));
+        });
+        lanProbeBreathTimer.setRepeats(true);
+        lanProbeBreathTimer.start();
     }
 
     private static void applyDiscoveredPeer(String host, int tcpPort) {
@@ -2868,8 +2941,8 @@ public class TextSendMain {
                 · 「设置」里可开局域网探测（默认关）：客户端列出同一局域网开服的 TextSend。
                 · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，点开后「允许 / 拒绝 / 拉黑」。
                 · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 120 秒）、黑名单。
-                · 连接和探测默认都用 54300。连接是 TCP，发现设备是 UDP（广播不能走 TCP），两端要一致。
-                · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行 UDP 54300。可勾「有连接时关闭探测」。
+                · 连接是 TCP，发现设备是 UDP（广播不能走 TCP）。默认「探测端口跟随连接端口」，两边同号。
+                · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行同号 UDP。可勾「有连接时关闭探测」。
                 · 服务端「已连接」列表可对某一客户端「踢下线」，无需重启服务。
                 · 不要只填 IP。PIN 路径用 8 位短码，扫码用长密钥。
                 · 握手成功后才清空输入框；失败或点断开则保留连接串。
