@@ -382,6 +382,33 @@ public class TextSendMain {
     }
 
     public static void main(String[] args) throws SocketException {
+        WebBridgeInbox.setWatch(new WebBridgeInbox.Watch() {
+            @Override
+            public void progress(String name, long done, long total) {
+                FILE_IO.onProgress(true, name, done, total, 1, 1);
+            }
+
+            @Override
+            public void finished() {
+                SwingUtilities.invokeLater(TextSendMain::endTransferUi);
+            }
+
+            @Override
+            public void aborted(String name) {
+                SwingUtilities.invokeLater(() -> {
+                    endTransferUi();
+                    flashStatus(name == null || name.isBlank() ? "已停止网页传输" : "已停止网页传输 " + name);
+                });
+            }
+
+            @Override
+            public void paused(String name) {
+                SwingUtilities.invokeLater(() -> {
+                    endTransferUi();
+                    flashStatus(name == null || name.isBlank() ? "手机已停止传输" : "手机已停止 " + name);
+                });
+            }
+        });
         LinuxWmClass.initIfNeeded();
         UserConfig.load();
         LanDiscover.boot();
@@ -3641,9 +3668,9 @@ public class TextSendMain {
             webWayB = new JButton("B 加密");
             webWayA = new JButton("A 明文");
             webWayC = new JButton("C 证书");
-            webWayB.setToolTipText("应用层加密。与 A 共用端口，同时只开一档。");
-            webWayA.setToolTipText("明文+令牌。与 B 共用端口，同时只开一档。");
-            webWayC.setToolTipText("还没做。要手机信任的证书。点开只是占位，不会启动。");
+            webWayA.setToolTipText("明文加令牌。和 B 不能同时开。");
+            webWayB.setToolTipText("正文加密。和 A 不能同时开。");
+            webWayC.setToolTipText("还没做，不会启动。");
             webWayB.addActionListener(e -> showWebWay('B'));
             webWayA.addActionListener(e -> showWebWay('A'));
             webWayC.addActionListener(e -> showWebWay('C'));
@@ -3659,8 +3686,8 @@ public class TextSendMain {
             ways.setOpaque(false);
             ways.setAlignmentX(Component.LEFT_ALIGNMENT);
             ways.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(36)));
-            ways.add(webWayB);
             ways.add(webWayA);
+            ways.add(webWayB);
             ways.add(webWayC);
             webHintLabel = new JLabel(" ");
             webHintLabel.setForeground(MUTED);
@@ -3673,6 +3700,7 @@ public class TextSendMain {
             webPortField = new JTextField(6);
             sizeDigitField(webPortField, 6);
             webPowerBtn = new JButton("启动");
+            webPowerBtn.setToolTipText("<html>左键：启动或停止<br>右键：启动，并用默认浏览器打开链接。已经在跑则只打开。</html>");
             webRefreshBtn = new JButton("刷新会话");
             // 固定同高；启动按钮留够「切换并启动」的宽度
             fixToolbarButton(webPowerBtn, 112);
@@ -3757,6 +3785,18 @@ public class TextSendMain {
             box.add(webUrlArea, BorderLayout.SOUTH);
             webDialog.setContentPane(box);
             webPowerBtn.addActionListener(e -> toggleWebBridgeShown());
+            webPowerBtn.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseReleased(MouseEvent e) {
+                    if (e.getButton() != MouseEvent.BUTTON3) {
+                        return;
+                    }
+                    if (!webPowerBtn.isEnabled() || !webPowerBtn.contains(e.getPoint())) {
+                        return;
+                    }
+                    openWebBridgeInBrowser();
+                }
+            });
             webRefreshBtn.addActionListener(e -> refreshWebBridgeShown());
             webPortField.addActionListener(e -> applyWebPort(false));
             webDialog.addWindowListener(new WindowAdapter() {
@@ -3795,6 +3835,24 @@ public class TextSendMain {
         if (webDialog != null) {
             webDialog.setVisible(false);
         }
+    }
+
+    /** 右键启动：没开就先开，再用默认浏览器打开当前链接。已在跑则只打开，不停止。 */
+    private static void openWebBridgeInBrowser() {
+        if (webWayShown != 'A' && webWayShown != 'B') {
+            return;
+        }
+        boolean wayA = webWayShown == 'A';
+        boolean onThis = wayA ? WebBridgeA.isRunning() : WebBridge.isRunning();
+        if (!onThis) {
+            applyWebPort(true);
+            onThis = webWayShown == 'A' ? WebBridgeA.isRunning() : WebBridge.isRunning();
+        }
+        if (!onThis) {
+            return;
+        }
+        paintWebDialog();
+        openWebLink();
     }
 
     private static void toggleWebBridgeShown() {
@@ -3937,9 +3995,9 @@ public class TextSendMain {
         styleWayButton(webWayC, webWayShown == 'C');
         if (webHintLabel != null) {
             String html = switch (webWayShown) {
-                case 'A' -> "<html>网页桥 · 兼容（未加密）。与 B 共用端口，同时只开一档。<br>只靠扫码令牌防误开；正文在局域网明文。</html>";
-                case 'C' -> "<html>证书档还没接上。要手机信任的 HTTPS 证书。<br>点这里不会启动。</html>";
-                default -> "<html>网页桥 · 应用层加密。默认端口 54301，与 A 互斥。<br>点二维码复制，点链接用浏览器打开。可传文字、图片和文件。</html>";
+                case 'A' -> "<html>明文，靠扫码令牌。和 B 不能同时开。</html>";
+                case 'C' -> "<html>还没做，点了也不会启动。</html>";
+                default -> "<html>正文加密。点二维码复制，点链接打开。</html>";
             };
             webHintLabel.setText(html);
         }
@@ -4090,12 +4148,12 @@ public class TextSendMain {
                 · 「启动」左键：最多 1 人，并打开二维码。中键：最多 N 人（设置里改，默认 7）。右键：最多 1 人，不弹二维码。再点是停止。
                 · 「发送」：有图片预览先发图；待发列表有选中则发这些文件；否则把输入框里的文字发出去。Ctrl+Enter 同样。
                 · 「文件」：左键选文件加入待发，右键用系统文件框。选中后还要点「发送」才传。
-                · 「取消」：停这一轮传输。待发列表还在；对面留下的半截，再发会续上。
+                · 「取消」：停这一轮传输，网页正在传来的文件也停。待发列表还在；半截留在磁盘，再发会续上。
                 · 「浏览」：往待发里加文件。Shift+浏览可选多个文件夹。
                 · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
-                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书（未做）。A/B/C 同时只开一档，共用网页端口（默认 54301）；开另一档会关掉当前档。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。有 v1 客户端时「发送」仍优先走原来的连接。安卓和电脑客户端仍用「二维码」。
+                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书（未做）。A/B/C 同时只开一档，共用网页端口（默认 54301）；开另一档会关掉当前档。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。有 v1 客户端时「发送」仍优先走原来的连接。安卓和电脑客户端仍用「二维码」。
                 · 「在线」：待授权和已连接。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台。
                 · 「设置」：探测、限流、冷却、黑名单、人数上限。
                 · 「帮助」：本页。F1 同样。
@@ -5668,6 +5726,7 @@ public class TextSendMain {
     }
 
     private static void cancelTransfer() {
+        WebBridgeInbox.shared().abortActive();
         cancelFileSend.set(true);
         if (isServerMode) {
             TsServer.cancelFilesCurrent();

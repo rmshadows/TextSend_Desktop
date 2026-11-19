@@ -74,7 +74,7 @@ public final class WebBridge {
     private static long touched;
     private static boolean tickStarted;
     private static final List<SseClient> clients = new ArrayList<>();
-    private static final WebBridgeInbox INBOX = new WebBridgeInbox();
+    private static final WebBridgeInbox INBOX = WebBridgeInbox.shared();
     /** 最近发给手机的密封事件。后连上的手机会补收。 */
     private static final List<byte[]> outbound = new ArrayList<>();
     private static final int MAX_OUTBOUND = 20;
@@ -375,6 +375,8 @@ public final class WebBridge {
                 fileChunk(ex);
             } else if ("/api/file/finish".equals(path)) {
                 fileFinish(ex);
+            } else if ("/api/file/cancel".equals(path)) {
+                fileCancel(ex);
             } else if ("/api/events".equals(path)) {
                 events(ex);
             } else {
@@ -399,8 +401,8 @@ public final class WebBridge {
             text(ex, 401, "session");
             return;
         }
-        byte[] body = "{\"v\":1,\"mode\":\"B\",\"encrypt\":true,\"pageVersion\":\"1\"}"
-                .getBytes(StandardCharsets.UTF_8);
+        byte[] body = ("{\"v\":1,\"mode\":\"B\",\"encrypt\":true,\"pageVersion\":\"1\",\"app\":\""
+                + TextSendMain.VERSION + "\"}").getBytes(StandardCharsets.UTF_8);
         Headers h = ex.getResponseHeaders();
         h.set("Content-Type", "application/json; charset=utf-8");
         h.set("Cache-Control", "no-store");
@@ -677,10 +679,27 @@ public final class WebBridge {
             INBOX.chunk(id, index, plain);
         } catch (IOException e) {
             String m = e.getMessage() == null ? "" : e.getMessage();
-            int code = "order".equals(m) ? 409 : ("size".equals(m) ? 413 : ("missing".equals(m) ? 404 : 400));
+            int code = "cancelled".equals(m) || "order".equals(m) ? 409
+                    : ("size".equals(m) ? 413 : ("missing".equals(m) ? 404 : 400));
             text(ex, code, m.isEmpty() ? "chunk" : m);
             return;
         }
+        touch();
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void fileCancel(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!sessionOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        INBOX.pause(query(ex, "id"));
         touch();
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.sendResponseHeaders(204, -1);
@@ -702,7 +721,7 @@ public final class WebBridge {
             saved = INBOX.finish(id);
         } catch (IOException e) {
             String m = e.getMessage() == null ? "" : e.getMessage();
-            int code = "missing".equals(m) ? 404 : ("incomplete".equals(m) ? 409 : 400);
+            int code = "missing".equals(m) ? 404 : ("cancelled".equals(m) || "incomplete".equals(m) ? 409 : 400);
             text(ex, code, m.isEmpty() ? "finish" : m);
             return;
         }

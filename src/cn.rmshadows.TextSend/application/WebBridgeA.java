@@ -337,6 +337,14 @@ public final class WebBridgeA {
                 send(ex);
             } else if ("/api/file".equals(path)) {
                 upload(ex);
+            } else if ("/api/file/begin".equals(path)) {
+                fileBegin(ex);
+            } else if ("/api/file/chunk".equals(path)) {
+                fileChunk(ex);
+            } else if ("/api/file/finish".equals(path)) {
+                fileFinish(ex);
+            } else if ("/api/file/cancel".equals(path)) {
+                fileCancel(ex);
             } else if ("/api/events".equals(path)) {
                 events(ex);
             } else {
@@ -366,6 +374,7 @@ public final class WebBridgeA {
         o.addProperty("mode", "A");
         o.addProperty("encrypt", false);
         o.addProperty("pageVersion", "1");
+        o.addProperty("app", TextSendMain.VERSION);
         o.addProperty("warning", WARN);
         byte[] body = o.toString().getBytes(StandardCharsets.UTF_8);
         Headers h = ex.getResponseHeaders();
@@ -545,6 +554,160 @@ public final class WebBridgeA {
         }
         Files.write(dest, data);
         return dest;
+    }
+
+    private static void fileBegin(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!authOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        byte[] buf;
+        try (InputStream in = ex.getRequestBody()) {
+            buf = in.readNBytes(16 * 1024 + 1);
+        }
+        if (buf.length == 0 || buf.length > 16 * 1024) {
+            text(ex, buf.length > 16 * 1024 ? 413 : 400, "body");
+            return;
+        }
+        String id;
+        String name;
+        String rel;
+        long size;
+        boolean clip;
+        try {
+            JsonObject obj = JsonParser.parseString(new String(buf, StandardCharsets.UTF_8)).getAsJsonObject();
+            id = obj.has("id") ? obj.get("id").getAsString() : "";
+            name = obj.has("name") ? obj.get("name").getAsString() : "";
+            rel = obj.has("rel") ? obj.get("rel").getAsString() : "";
+            size = obj.has("size") ? obj.get("size").getAsLong() : -1;
+            clip = obj.has("clip") && obj.get("clip").getAsBoolean();
+        } catch (RuntimeException e) {
+            text(ex, 400, "json");
+            return;
+        }
+        String body;
+        try {
+            body = WebBridgeInbox.shared().begin(id, name, rel, size, clip);
+        } catch (IOException e) {
+            text(ex, "size".equals(e.getMessage()) ? 413 : 400, e.getMessage() == null ? "begin" : e.getMessage());
+            return;
+        }
+        synchronized (LOCK) {
+            touched = System.currentTimeMillis();
+        }
+        byte[] raw = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(200, raw.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(raw);
+        }
+    }
+
+    private static void fileChunk(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!authOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        String id = query(ex, "id");
+        int index;
+        try {
+            index = Integer.parseInt(query(ex, "i"));
+        } catch (RuntimeException e) {
+            text(ex, 400, "index");
+            return;
+        }
+        byte[] data;
+        try (InputStream in = ex.getRequestBody()) {
+            data = in.readNBytes(WebBridgeInbox.CHUNK + 1);
+        }
+        if (data.length > WebBridgeInbox.CHUNK) {
+            text(ex, 413, "size");
+            return;
+        }
+        try {
+            WebBridgeInbox.shared().chunk(id, index, data);
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            int code = "cancelled".equals(m) || "order".equals(m) ? 409
+                    : ("size".equals(m) ? 413 : ("missing".equals(m) ? 404 : 400));
+            text(ex, code, m.isEmpty() ? "chunk" : m);
+            return;
+        }
+        synchronized (LOCK) {
+            touched = System.currentTimeMillis();
+        }
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void fileCancel(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!authOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        WebBridgeInbox.shared().pause(query(ex, "id"));
+        synchronized (LOCK) {
+            touched = System.currentTimeMillis();
+        }
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void fileFinish(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!authOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        WebBridgeInbox.Saved saved;
+        try {
+            saved = WebBridgeInbox.shared().finish(query(ex, "id"));
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            int code = "missing".equals(m) ? 404 : ("cancelled".equals(m) || "incomplete".equals(m) ? 409 : 400);
+            text(ex, code, m.isEmpty() ? "finish" : m);
+            return;
+        }
+        synchronized (LOCK) {
+            touched = System.currentTimeMillis();
+        }
+        String shown = saved.path.getFileName().toString();
+        boolean wantClip = saved.clip && saved.size > 0 && saved.size <= Protocol.CLIPBOARD_IMAGE_MAX
+                && FileNames.isImageName(shown);
+        BufferedImage image = null;
+        if (wantClip) {
+            try (InputStream in = Files.newInputStream(saved.path)) {
+                image = ImageIO.read(in);
+            } catch (IOException ignored) {
+                image = null;
+            }
+        }
+        BufferedImage clipImage = image;
+        SwingUtilities.invokeLater(() -> {
+            boolean onClip = clipImage != null && PasteUtil.setClipboardImage(clipImage);
+            TextSendMain.noteWeb(onClip ? "收到图片 " + shown + "，已放入剪贴板" : "收到文件 " + shown);
+        });
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
     }
 
     private static void events(HttpExchange ex) throws IOException {

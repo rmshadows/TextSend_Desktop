@@ -426,11 +426,96 @@
     return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
   }
 
+  var floatKind = "wait";
+  var floatBusy = false;
+  var floatPct = 0;
+  var floatPrefs = { show: true, send: false, x: null, y: null };
+  var floatDragged = false;
+  function loadFloatPrefs() {
+    try {
+      var raw = localStorage.getItem("ts-web-ui");
+      if (!raw) return;
+      var o = JSON.parse(raw);
+      if (o.show === false) floatPrefs.show = false;
+      if (o.send) floatPrefs.send = true;
+      if (typeof o.x === "number" && typeof o.y === "number") {
+        floatPrefs.x = o.x;
+        floatPrefs.y = o.y;
+      }
+    } catch (e) { /* 读不到就用默认 */ }
+  }
+  function saveFloatPrefs() {
+    try { localStorage.setItem("ts-web-ui", JSON.stringify(floatPrefs)); } catch (e) {}
+  }
+  function placeFloat() {
+    var dot = document.getElementById("floatDot");
+    if (!dot || floatPrefs.x == null || floatPrefs.y == null) return;
+    var w = dot.offsetWidth || 44;
+    var h = dot.offsetHeight || 44;
+    var x = Math.max(8, Math.min(window.innerWidth - w - 8, floatPrefs.x));
+    var y = Math.max(8, Math.min(window.innerHeight - h - 8, floatPrefs.y));
+    floatPrefs.x = x;
+    floatPrefs.y = y;
+    dot.style.left = x + "px";
+    dot.style.top = y + "px";
+    dot.style.right = "auto";
+    dot.style.bottom = "auto";
+  }
+  function paintFloat() {
+    if (typeof document === "undefined") return;
+    var dot = document.getElementById("floatDot");
+    var label = document.getElementById("floatText");
+    var main = document.getElementById("floatMain");
+    var send = document.getElementById("floatSend");
+    if (!dot) return;
+    if (send) send.hidden = !floatPrefs.send;
+    if (!floatPrefs.show) {
+      dot.hidden = true;
+      return;
+    }
+    var header = document.querySelector(".top");
+    var away = !header || header.getBoundingClientRect().bottom < 4;
+    var prog = document.getElementById("progressWrap");
+    var rect = prog ? prog.getBoundingClientRect() : null;
+    var progAway = !!(floatBusy && rect && (rect.bottom < 48 || rect.top > window.innerHeight - 24));
+    if (!dot.classList.contains("dragging")) dot.hidden = !(away || progAway);
+    var kind = floatKind || "wait";
+    if (floatBusy && progAway) kind = "busy";
+    var text = "";
+    if (floatBusy && progAway) text = Math.round(floatPct || 0) + "%";
+    else if (away && kind === "down") text = "重连中";
+    else if (away && kind === "dead") text = "未连接";
+    else if (away && kind === "wait") text = "连接中";
+    var solo = !text && !floatPrefs.send;
+    dot.className = "float-dot " + kind + (solo ? " solo" : "") + (dot.classList.contains("dragging") ? " dragging" : "");
+    if (label) {
+      label.textContent = text;
+      label.hidden = !text;
+    }
+    if (main) main.setAttribute("aria-label", text || (kind === "ok" ? "已连接" : "连接状态"));
+    placeFloat();
+  }
+  function showAppVersion(ver) {
+    if (!ver) return;
+    var line = document.getElementById("verLine");
+    if (line) line.textContent = "电脑端 " + ver;
+    var mode = document.getElementById("modeLabel");
+    if (!mode) return;
+    var base = mode.textContent.indexOf("未加密") >= 0 ? "兼容 · 未加密" : "兼容模式";
+    mode.textContent = base + " · " + ver;
+  }
+  function noteProgress(on, pct) {
+    floatBusy = !!on;
+    floatPct = on ? (pct || 0) : 0;
+    paintFloat();
+  }
   function setLink(kind, text) {
+    floatKind = kind || "wait";
     var link = document.getElementById("link");
     if (!link) return;
     link.className = "chip " + kind;
     link.textContent = text;
+    paintFloat();
   }
 
   function addCard(hostId, emptyId, text, ts) {
@@ -494,6 +579,9 @@
     var titleEl = document.querySelector("h1");
     var fileBusy = false;
     var alive = true;
+    var activeXhr = null;
+    var stopAsked = false;
+    var currentJob = null;
     var pending = [];
     var sendSeq = 0;
     var sendTotal = 0;
@@ -507,6 +595,8 @@
         dropzone.setAttribute("aria-disabled", off ? "true" : "false");
         if (off) dropzone.classList.remove("over");
       }
+      var sendCard = document.getElementById("sendCard");
+      if (off && sendCard) sendCard.classList.remove("over");
     }
     var params = new URLSearchParams(location.search);
     var sid = params.get("s") || "";
@@ -524,10 +614,11 @@
         lockPicks(true);
         return;
       }
-      if (titleEl) titleEl.textContent = "TextSend 兼容（未加密）";
+      var modeLabel = document.getElementById("modeLabel");
+      if (modeLabel) modeLabel.textContent = "兼容 · 未加密";
       if (warnEl) {
         warnEl.className = "warn danger";
-        warnEl.innerHTML = "当前安全模式：<b>兼容（未加密）</b><br>消息以明文在局域网传输，同一网络中的其他人可能看到内容。请仅在可信网络使用；不要发送密码、验证码等敏感信息。需要加密时可扫电脑上的「B 加密」码。";
+        warnEl.innerHTML = "<b>未加密。</b>同一局域网的人可能看到内容。要加密请扫电脑上的 B。";
       }
     } else {
       try {
@@ -601,7 +692,17 @@
       }
       dropped = false;
       setLink("ok", "已连接");
+      pullMeta();
     };
+    function pullMeta() {
+      fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      }).then(function (info) {
+        if (info && info.app) showAppVersion(String(info.app));
+      }).catch(function () {});
+    }
+    pullMeta();
     es.addEventListener("msg", function (ev) {
       try {
         var msg;
@@ -698,6 +799,8 @@
     }
 
     sendBtn.addEventListener("click", send);
+    var floatSend = document.getElementById("floatSend");
+    if (floatSend) floatSend.addEventListener("click", send);
     box.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -724,6 +827,15 @@
       if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + " KB/s";
       return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
     }
+    function fmtEta(sec) {
+      sec = Math.max(0, Math.round(sec));
+      if (sec < 60) return sec + " 秒";
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      if (m < 60) return m + " 分 " + (s < 10 ? "0" : "") + s + " 秒";
+      var h = Math.floor(m / 60);
+      return h + " 小时 " + (m % 60) + " 分";
+    }
     function jobLabel(job) {
       var file = job.file;
       var fallback = file.type === "image/jpeg" ? "粘贴.jpg"
@@ -733,6 +845,7 @@
       return file.webkitRelativePath || file.name || fallback;
     }
     function setProgress(on, pct, text) {
+      noteProgress(!!on && !!progressWrap, pct);
       if (!progressWrap) return;
       if (!on) {
         progressWrap.classList.remove("on");
@@ -779,38 +892,21 @@
       if (sendPendingBtn) sendPendingBtn.disabled = fileBusy || pending.length === 0 || !alive;
       if (clearPendingBtn) clearPendingBtn.disabled = fileBusy || pending.length === 0;
     }
-    function readFile(file) {
-      return new Promise(function (resolve, reject) {
-        var reader = new FileReader();
-        reader.onload = function () { resolve(new Uint8Array(reader.result)); };
-        reader.onerror = function () { reject(new Error("读不到 " + (file.name || "文件"))); };
-        reader.readAsArrayBuffer(file);
-      });
-    }
-    function packFile(name, rel, mime, clip, bytes) {
-      var head = new TextEncoder().encode(JSON.stringify({
-        v: 1,
-        type: "file",
-        name: name || "file",
-        rel: rel || "",
-        mime: mime || "",
-        clip: !!clip
-      }));
-      if (head.length > 8192) throw new Error("文件名太长");
-      var out = new Uint8Array(2 + head.length + bytes.length);
-      out[0] = (head.length >> 8) & 255;
-      out[1] = head.length & 255;
-      out.set(head, 2);
-      out.set(bytes, 2 + head.length);
-      return out;
-    }
     function looksImage(file) {
       if (file.type && file.type.indexOf("image/") === 0) return true;
       return /\.(png|jpe?g|gif|bmp|webp|tiff?|heic|heif)$/i.test(file.name || "");
     }
-    function postBody(url, body, onProg) {
+    function postBody(url, body, onProg, seq) {
       return new Promise(function (resolve, reject) {
+        if (stopAsked || (seq != null && seq !== sendSeq)) {
+          reject(new Error("已取消"));
+          return;
+        }
         var xhr = new XMLHttpRequest();
+        activeXhr = xhr;
+        function clear() {
+          if (activeXhr === xhr) activeXhr = null;
+        }
         xhr.open("POST", url);
         var headers = authHeaders({ "Content-Type": "application/octet-stream" });
         Object.keys(headers).forEach(function (k) { xhr.setRequestHeader(k, headers[k]); });
@@ -818,7 +914,7 @@
         var lastT = t0;
         var lastLoaded = 0;
         xhr.upload.onprogress = function (ev) {
-          if (!ev.lengthComputable || !onProg) return;
+          if (stopAsked || (seq != null && seq !== sendSeq) || !ev.lengthComputable || !onProg) return;
           var now = Date.now();
           var dt = Math.max(1, now - lastT);
           var speed = ((ev.loaded - lastLoaded) * 1000) / dt;
@@ -829,14 +925,138 @@
           onProg(ev.loaded, ev.total, avg || speed);
         };
         xhr.onload = function () {
-          resolve({ status: xhr.status });
+          clear();
+          resolve({ status: xhr.status, text: xhr.responseText || "" });
         };
-        xhr.onerror = function () { reject(new Error("网络错误")); };
-        xhr.onabort = function () { reject(new Error("已取消")); };
+        xhr.onerror = function () { clear(); reject(new Error("网络错误")); };
+        xhr.onabort = function () { clear(); reject(new Error("已取消")); };
         xhr.send(body);
       });
     }
-    function uploadOne(job, index, total) {
+    var pool = [];
+    var poolCursor = 0;
+    var poolFailed = false;
+    var sealSeq = 0;
+    var sealWait = {};
+    function sealOnPage(plain) {
+      return new Promise(function (resolve, reject) {
+        setTimeout(function () {
+          try { resolve(seal(key, plain)); }
+          catch (err) { reject(new Error("加密失败")); }
+        }, 0);
+      });
+    }
+    function dropWorker(w) {
+      var i = pool.indexOf(w);
+      if (i >= 0) pool.splice(i, 1);
+      try { w.terminate(); } catch (e) {}
+    }
+    function openWorker() {
+      var w = new Worker(new URL("/bridge.js", location.href).href);
+      w.onmessage = function (ev) {
+        var job = sealWait[ev.data.n];
+        if (!job) return;
+        delete sealWait[ev.data.n];
+        if (ev.data.ok && ev.data.sealed) job.resolve(ev.data.sealed);
+        else job.fail();
+      };
+      w.onerror = function (ev) {
+        if (ev && ev.preventDefault) ev.preventDefault();
+        dropWorker(w);
+        if (!pool.length) poolFailed = true;
+        Object.keys(sealWait).forEach(function (n) {
+          var job = sealWait[n];
+          delete sealWait[n];
+          if (job) job.fail();
+        });
+      };
+      return w;
+    }
+    function ensurePool() {
+      if (modeA || pool.length || poolFailed || typeof Worker === "undefined") return;
+      var n = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+      if (n < 2) n = 2;
+      if (n > 4) n = 4;
+      try {
+        for (var i = 0; i < n; i++) pool.push(openWorker());
+      } catch (e) {
+        pool.forEach(function (w) { try { w.terminate(); } catch (e2) {} });
+        pool = [];
+        poolFailed = true;
+      }
+    }
+    function sealOrRaw(bytes) {
+      if (modeA || !key) return Promise.resolve(bytes);
+      var plain = new Uint8Array(bytes);
+      ensurePool();
+      if (!pool.length) return sealOnPage(plain);
+      var worker = pool[poolCursor % pool.length];
+      poolCursor++;
+      return new Promise(function (resolve, reject) {
+        var n = ++sealSeq;
+        var settled = false;
+        function ok(out) {
+          if (settled) return;
+          settled = true;
+          resolve(out);
+        }
+        function fail() {
+          if (settled) return;
+          settled = true;
+          sealOnPage(plain).then(ok, reject);
+        }
+        sealWait[n] = { resolve: ok, fail: fail };
+        try {
+          var copy = new Uint8Array(plain);
+          worker.postMessage({ n: n, key: new Uint8Array(key), plain: copy }, [copy.buffer]);
+        } catch (err) {
+          delete sealWait[n];
+          dropWorker(worker);
+          fail();
+        }
+      });
+    }
+    function readSlice(file, off, len) {
+      return new Promise(function (resolve, reject) {
+        var blob = file.slice(off, Math.min(file.size, off + len));
+        var reader = new FileReader();
+        reader.onload = function () { resolve(new Uint8Array(reader.result)); };
+        reader.onerror = function () { reject(new Error("读不到文件")); };
+        reader.readAsArrayBuffer(blob);
+      });
+    }
+    function fileStoreKey(label, file) {
+      return "ts-file:" + label + "\n" + file.size + "\n" + (file.lastModified || 0);
+    }
+    function stableId(label, file) {
+      var k = fileStoreKey(label, file);
+      try {
+        var old = localStorage.getItem(k);
+        if (old && /^[0-9a-f]{32}$/i.test(old)) return old;
+        var id = randId();
+        localStorage.setItem(k, id);
+        return id;
+      } catch (e) {
+        return randId();
+      }
+    }
+    function forgetId(label, file) {
+      try { localStorage.removeItem(fileStoreKey(label, file)); } catch (e) {}
+    }
+    function pcStopped(res) {
+      return !!(res && String(res.text || "").indexOf("cancelled") >= 0);
+    }
+    function postRetry(url, body, onProg, tries, seq) {
+      return postBody(url, body, onProg, seq).catch(function (err) {
+        if (stopAsked || (seq != null && seq !== sendSeq) || (err && err.message === "已取消")) throw err;
+        if (tries <= 0) throw err;
+        return new Promise(function (r) { setTimeout(r, 500); }).then(function () {
+          return postRetry(url, body, onProg, tries - 1, seq);
+        });
+      });
+    }
+    function uploadOne(job, index, total, seq) {
+      ensurePool();
       var file = job.file;
       var fallback = file.type === "image/jpeg" ? "粘贴.jpg"
         : file.type === "image/gif" ? "粘贴.gif"
@@ -844,31 +1064,194 @@
         : (file.type && file.type.indexOf("image/") === 0 ? "粘贴.png" : "file");
       var label = jobLabel(job);
       var prefix = "(" + index + "/" + total + ") ";
-      status.textContent = prefix + (modeA ? "正在准备 " : "正在加密 ") + label;
-      setProgress(true, 0, prefix + "准备中…");
-      return readFile(file).then(function (bytes) {
-        if (!alive) throw new Error("会话已失效，请重新扫码。");
-        var plain = packFile(file.name || fallback, job.asDir ? (file.webkitRelativePath || label) : "", file.type || "", job.clip, bytes);
-        var body = modeA ? plain : seal(key, plain);
-        status.textContent = prefix + "正在发送 " + label;
-        return postBody("/api/file?" + qAuth(), body, function (loaded, totalBytes, speed) {
-          var pct = totalBytes > 0 ? (loaded * 100 / totalBytes) : 0;
-          setProgress(true, pct, prefix + label + "  " + pct.toFixed(0) + "%  ·  " + fmtSpeed(speed));
-        }).then(function (res) {
-          if (res.status === 204) {
-            addSent(label, Date.now());
-            return;
-          }
-          if (res.status === 401) throw new Error("会话已失效，请重新扫码。");
-          if (res.status === 413) throw new Error(label + " 太大，服务器拒绝（请换小一点的，或等分片续传）");
-          throw new Error(label + " 发送失败（" + res.status + "）");
-        });
-      }).catch(function (err) {
-        if (err && /quota|memory|分配|Array buffer/i.test(String(err.message || err))) {
-          throw new Error(label + " 太大，手机内存不够（整包加密会吃内存）");
+      var id = stableId(label, file);
+      var name = file.name || fallback;
+      var rel = job.asDir ? (file.webkitRelativePath || label) : "";
+      var speed = { ema: 0, t: Date.now(), b: 0 };
+      var jumps = 0;
+      function show(done, phase) {
+        var now = Date.now();
+        var dt = (now - speed.t) / 1000;
+        if (dt >= 0.3) {
+          var inst = (done - speed.b) / dt;
+          if (inst >= 0) speed.ema = speed.ema ? speed.ema * 0.55 + inst * 0.45 : inst;
+          speed.t = now;
+          speed.b = done;
         }
-        throw err;
-      });
+        var pct = file.size > 0 ? (done * 100 / file.size) : 100;
+        var eta = speed.ema > 1 && done < file.size ? (file.size - done) / speed.ema : 0;
+        var line = prefix + label
+          + "  " + fmtSize(done) + " / " + fmtSize(file.size || 0)
+          + "  ·  " + pct.toFixed(0) + "%"
+          + "  ·  " + fmtSpeed(speed.ema)
+          + (eta >= 1 ? "  ·  剩余 " + fmtEta(eta) : "");
+        if (phase) line = phase + "  " + line;
+        if (!modeA && pool.length > 1) line += "  ·  " + pool.length + " 线程";
+        status.textContent = line;
+        setProgress(true, pct, line);
+      }
+      function halted() {
+        return stopAsked || seq !== sendSeq;
+      }
+      function begin() {
+        if (!alive) return Promise.reject(new Error("会话已失效，请重新扫码。"));
+        if (halted()) return Promise.reject(new Error("已取消"));
+        show(speed.b, "准备");
+        var meta = new TextEncoder().encode(JSON.stringify({
+          v: 1, type: "file-begin", id: id, name: name, rel: rel, size: file.size || 0, clip: !!job.clip
+        }));
+        return sealOrRaw(meta).then(function (body) {
+          if (halted()) throw new Error("已取消");
+          return postRetry("/api/file/begin?" + qAuth(), body, null, 2, seq);
+        }).then(function (res) {
+          if (res.status === 401) throw new Error("会话已失效，请重新扫码。");
+          if (res.status === 413) throw new Error(label + " 超过 20GB");
+          if (res.status !== 200) throw new Error(label + " 无法开始（" + res.status + "）");
+          var info;
+          try { info = JSON.parse(res.text || "{}"); }
+          catch (e) { throw new Error(label + " 开始失败"); }
+          var next = typeof info.next === "number" ? info.next : 0;
+          var chunk = info.chunk > 0 ? info.chunk : (1024 * 1024);
+          if (next > 0 && next < file.size) show(next, "续传");
+          speed.b = next;
+          speed.t = Date.now();
+          return sendFrom(next, chunk);
+        });
+      }
+      function sendFrom(start, chunk) {
+        if (!alive) return Promise.reject(new Error("会话已失效，请重新扫码。"));
+        if (halted()) return Promise.reject(new Error("已取消"));
+        if (start >= file.size) return finish();
+        var parallel = modeA ? 2 : Math.max(1, pool.length || 1);
+        return new Promise(function (resolve, reject) {
+          var nextRead = start;
+          var nextSend = start;
+          var inflight = 0;
+          var buffered = 0;
+          var sending = false;
+          var ready = {};
+          var failed = false;
+          function fail(err) {
+            if (failed) return;
+            failed = true;
+            reject(err instanceof Error ? err : new Error("发送失败"));
+          }
+          function done() {
+            if (failed || sending) return;
+            if (nextSend >= file.size && inflight === 0 && nextRead >= file.size) {
+              failed = true;
+              finish().then(resolve, reject);
+            }
+          }
+          function pumpRead() {
+            if (failed) return;
+            if (halted()) {
+              fail(new Error("已取消"));
+              return;
+            }
+            while (inflight + buffered < parallel && nextRead < file.size) {
+              var off = nextRead;
+              var len = Math.min(chunk, file.size - off);
+              nextRead += len;
+              inflight++;
+              // off/len 必须按次抄下来。var 在循环里是同一个变量，回调会全写到最后一块上，传输就停住。
+              (function (at, n) {
+                readSlice(file, at, n).then(function (bytes) {
+                  if (halted()) throw new Error("已取消");
+                  return sealOrRaw(bytes);
+                }).then(function (body) {
+                  if (failed) return;
+                  ready[at] = body;
+                  inflight--;
+                  buffered++;
+                  pumpSend();
+                  pumpRead();
+                  done();
+                }).catch(function (err) {
+                  fail(err instanceof Error ? err : new Error("加密失败"));
+                });
+              })(off, len);
+            }
+          }
+          function pumpSend() {
+            if (failed || sending) return;
+            if (halted()) {
+              fail(new Error("已取消"));
+              return;
+            }
+            if (ready[nextSend] == null) {
+              done();
+              return;
+            }
+            var off = nextSend;
+            var body = ready[off];
+            delete ready[off];
+            buffered--;
+            var len = Math.min(chunk, file.size - off);
+            var part = Math.floor(off / chunk);
+            sending = true;
+            show(off, "发送");
+            pumpRead();
+            postRetry("/api/file/chunk?" + qAuth() + "&id=" + encodeURIComponent(id) + "&i=" + part, body, function (loaded) {
+              show(Math.min(file.size, off + (loaded || 0)), "发送");
+            }, 2, seq).then(function (res) {
+              sending = false;
+              if (failed) return;
+              if (pcStopped(res)) {
+                fail(new Error("电脑已停止"));
+                return;
+              }
+              if (res.status === 204) {
+                nextSend = off + len;
+                show(Math.min(file.size, nextSend), "发送");
+                if (nextSend >= file.size) {
+                  done();
+                  return;
+                }
+                pumpSend();
+                pumpRead();
+                return;
+              }
+              if ((res.status === 409 || res.status === 404) && jumps < 2) {
+                jumps++;
+                failed = true;
+                begin().then(resolve, reject);
+                return;
+              }
+              if (res.status === 401) {
+                fail(new Error("会话已失效，请重新扫码。"));
+                return;
+              }
+              fail(new Error(label + " 发送失败（" + res.status + "）"));
+            }).catch(function (err) {
+              sending = false;
+              fail(err instanceof Error ? err : new Error("发送失败"));
+            });
+          }
+          show(start, modeA ? "读取" : "加密");
+          pumpRead();
+        });
+      }
+      function finish() {
+        if (halted()) return Promise.reject(new Error("已取消"));
+        show(file.size, "保存");
+        return postRetry("/api/file/finish?" + qAuth() + "&id=" + encodeURIComponent(id), new Uint8Array(0), null, 2, seq)
+          .then(function (res) {
+            if (pcStopped(res)) throw new Error("电脑已停止");
+            if (res.status === 204) {
+              forgetId(label, file);
+              addSent(label, Date.now());
+              return;
+            }
+            if (res.status === 409 && jumps < 2) {
+              jumps++;
+              return begin();
+            }
+            if (res.status === 401) throw new Error("会话已失效，请重新扫码。");
+            throw new Error(label + " 保存失败（" + res.status + "）");
+          });
+      }
+      return begin();
     }
     function pumpFiles(seq) {
       if (seq !== sendSeq) return;
@@ -890,23 +1273,75 @@
       lockPicks(true);
       renderPending();
       var job = pending.shift();
+      currentJob = job;
       sendDone++;
       var index = sendDone;
       var all = sendTotal;
       setTimeout(function () {
-        if (seq !== sendSeq) return;
-        uploadOne(job, index, all).then(function () {
-          if (seq !== sendSeq) return;
+        if (seq !== sendSeq || stopAsked) {
+          if (stopAsked) finishStop(job);
+          return;
+        }
+        uploadOne(job, index, all, seq).then(function () {
+          if (seq !== sendSeq || stopAsked) {
+            if (stopAsked) finishStop(job);
+            return;
+          }
+          currentJob = null;
           pumpFiles(seq);
         }).catch(function (err) {
+          var cancelled = stopAsked || (err && err.message === "已取消");
+          if (cancelled) {
+            finishStop(job);
+            return;
+          }
           if (seq !== sendSeq) return;
+          pending.unshift(job);
+          currentJob = null;
+          if (sendDone > 0) sendDone--;
           fileBusy = false;
           lockPicks(false);
           setProgress(false);
           renderPending();
-          status.textContent = err && err.message ? err.message : "发送失败";
+          var msg = err && err.message ? err.message : "发送失败";
+          status.textContent = msg + "。再点「发送待发」会从断点继续。";
         });
       }, 20);
+    }
+    function finishStop(job) {
+      if (job && pending.indexOf(job) < 0) pending.unshift(job);
+      currentJob = null;
+      stopAsked = false;
+      fileBusy = false;
+      lockPicks(false);
+      setProgress(false);
+      renderPending();
+      status.textContent = "已停止。待发还在列表里。想继续再点「发送待发」，会从断点接着传。";
+    }
+    function tellPcStop() {
+      if (!alive || !currentJob) return;
+      var id = stableId(jobLabel(currentJob), currentJob.file);
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/file/cancel?" + qAuth() + "&id=" + encodeURIComponent(id));
+        var headers = authHeaders({ "Content-Type": "application/octet-stream" });
+        Object.keys(headers).forEach(function (k) { xhr.setRequestHeader(k, headers[k]); });
+        xhr.send(new Uint8Array(0));
+      } catch (e) { /* 告诉不上电脑，半截还在，下次再发会续上 */ }
+    }
+    function stopTransfer() {
+      if (!fileBusy && !activeXhr) return;
+      tellPcStop();
+      stopAsked = true;
+      sendSeq++;
+      status.textContent = "正在停止…";
+      var xhr = activeXhr;
+      activeXhr = null;
+      if (xhr) {
+        try { xhr.abort(); } catch (e) {}
+      } else if (currentJob) {
+        finishStop(currentJob);
+      }
     }
     function startPendingSend() {
       if (!alive || fileBusy || !pending.length) return;
@@ -1088,14 +1523,16 @@
         });
       });
     }
-    // 整页拦截，避免浏览器直接打开文件；真正入队以虚线框为准，也允许拖到「发给电脑」卡片
+    // 整页拦截，避免浏览器直接打开文件。发给电脑这一整块都能放，包括输入框。
     ["dragenter", "dragover", "drop"].forEach(function (type) {
       document.addEventListener(type, function (e) {
         e.preventDefault();
       });
     });
-    bindDrop(dropzone);
+    bindDrop(document.getElementById("sendCard"));
 
+    var stopSendBtn = document.getElementById("stopSend");
+    if (stopSendBtn) stopSendBtn.addEventListener("click", stopTransfer);
     if (sendPendingBtn) {
       sendPendingBtn.addEventListener("click", startPendingSend);
     }
@@ -1136,7 +1573,100 @@
     bytesToHex: bytesToHex,
     hexToBytes: hexToBytes
   };
+  if (typeof document !== "undefined") {
+    loadFloatPrefs();
+    var floatDot = document.getElementById("floatDot");
+    var floatMain = document.getElementById("floatMain");
+    var settings = document.getElementById("settings");
+    var optFloat = document.getElementById("optFloat");
+    var optFloatSend = document.getElementById("optFloatSend");
+    if (optFloat) optFloat.checked = floatPrefs.show !== false;
+    if (optFloatSend) optFloatSend.checked = !!floatPrefs.send;
+    function openSettings() { if (settings) settings.hidden = false; }
+    function closeSettings() { if (settings) settings.hidden = true; }
+    var openBtn = document.getElementById("openSettings");
+    var closeBtn = document.getElementById("closeSettings");
+    if (openBtn) openBtn.addEventListener("click", openSettings);
+    if (closeBtn) closeBtn.addEventListener("click", closeSettings);
+    if (settings) {
+      settings.addEventListener("click", function (e) {
+        if (e.target === settings) closeSettings();
+      });
+    }
+    if (optFloat) {
+      optFloat.addEventListener("change", function () {
+        floatPrefs.show = !!optFloat.checked;
+        saveFloatPrefs();
+        paintFloat();
+      });
+    }
+    if (optFloatSend) {
+      optFloatSend.addEventListener("change", function () {
+        floatPrefs.send = !!optFloatSend.checked;
+        saveFloatPrefs();
+        paintFloat();
+      });
+    }
+    if (floatDot && floatMain) {
+      var drag = null;
+      floatMain.addEventListener("pointerdown", function (e) {
+        if (e.button != null && e.button !== 0) return;
+        var box = floatDot.getBoundingClientRect();
+        drag = { x: e.clientX, y: e.clientY, left: box.left, top: box.top, moved: false };
+        floatDragged = false;
+        floatDot.classList.add("dragging");
+        if (floatMain.setPointerCapture) floatMain.setPointerCapture(e.pointerId);
+      });
+      floatMain.addEventListener("pointermove", function (e) {
+        if (!drag) return;
+        var dx = e.clientX - drag.x;
+        var dy = e.clientY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 5) drag.moved = true;
+        if (!drag.moved) return;
+        floatPrefs.x = drag.left + dx;
+        floatPrefs.y = drag.top + dy;
+        placeFloat();
+      });
+      function endDrag() {
+        if (!drag) return;
+        floatDragged = drag.moved;
+        if (drag.moved) saveFloatPrefs();
+        drag = null;
+        floatDot.classList.remove("dragging");
+        paintFloat();
+      }
+      floatMain.addEventListener("pointerup", endDrag);
+      floatMain.addEventListener("pointercancel", endDrag);
+      floatMain.addEventListener("click", function () {
+        if (floatDragged) {
+          floatDragged = false;
+          return;
+        }
+        var prog = document.getElementById("progressWrap");
+        if (floatBusy && prog) {
+          prog.scrollIntoView({ behavior: "smooth", block: "center" });
+          return;
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
+    window.addEventListener("scroll", paintFloat, { passive: true });
+    window.addEventListener("resize", placeFloat);
+    paintFloat();
+  }
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.TsWebBridge = api;
-  if (typeof document !== "undefined") boot();
+  if (typeof document === "undefined" && typeof importScripts === "function") {
+    root.onmessage = function (e) {
+      try {
+        var d = e.data;
+        var sealed = seal(new Uint8Array(d.key), new Uint8Array(d.plain));
+        root.postMessage({ n: d.n, ok: 1, sealed: sealed }, [sealed.buffer]);
+      } catch (err) {
+        root.postMessage({ n: e.data && e.data.n, ok: 0 });
+      }
+    };
+  } else if (typeof document !== "undefined") {
+    boot();
+  }
 })(typeof globalThis !== "undefined" ? globalThis : this);

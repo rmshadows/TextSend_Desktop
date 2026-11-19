@@ -7,59 +7,106 @@
   <title>TextSend 兼容模式</title>
   <style>
     :root {
-      --bg: #f3f0e8;
-      --ink: #1c1c1c;
-      --muted: #5c574e;
-      --line: #d9d3c7;
+      --bg: #eef1f6;
+      --ink: #16181d;
+      --muted: #5c6570;
+      --line: #e3e7ee;
       --card: #fff;
+      --accent: #3d7eff;
+      --accent-ink: #fff;
+      --danger: #c2413b;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        radial-gradient(1200px 400px at 10% -10%, #e7efff 0%, transparent 55%),
+        var(--bg);
       color: var(--ink);
       font: 16px/1.5 "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
     }
     .wrap {
-      max-width: 960px;
+      max-width: 980px;
       margin: 0 auto;
       padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
     }
     .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    h1 { font-size: 1.35rem; margin: 0; letter-spacing: 0.01em; }
-    h2 { font-size: 0.95rem; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
-    .chip { flex: none; font-size: 0.875rem; padding: 4px 10px; border: 1px solid var(--line); background: #fff; }
-    .chip.ok { background: #e7f2e4; color: #1d6b32; border-color: #b7d7b0; }
-    .chip.down, .chip.dead { background: #9c2f23; color: #fff; border-color: #9c2f23; }
-    .warn { background: #fff4d6; border: 1px solid #c4a35a; padding: 10px 12px; margin: 14px 0; }
-    .warn.danger { background: #fde8e6; border-color: #c45b4a; color: #6b1f16; }
-    #status { min-height: 1.5em; margin: 0 0 12px; color: var(--muted); }
+    .brand { min-width: 0; }
+    h1 { font-size: 1.45rem; margin: 0; font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; white-space: nowrap; }
+    .mode { margin: 3px 0 0; color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; }
+    h2 { font-size: 0.82rem; margin: 0 0 10px; color: var(--muted); font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
+    .chip {
+      flex: 0 1 auto;
+      max-width: 16rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      line-height: 1.35;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      box-shadow: 0 1px 2px rgba(22, 24, 29, 0.06);
+    }
+    .chip.ok { background: #e8f7ee; color: #157a3a; }
+    .chip.down, .chip.dead { background: var(--danger); color: #fff; }
+    .warn {
+      background: #fff;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin: 14px 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      box-shadow: 0 1px 2px rgba(22, 24, 29, 0.04), 0 8px 24px rgba(22, 24, 29, 0.04);
+    }
+    .warn.danger { background: #fff5f4; color: #8d2d28; }
+    #status { min-height: 1.5em; margin: 0 0 12px; color: var(--muted); font-size: 0.92rem; }
     .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
-    .card { background: var(--card); border: 1px solid var(--line); padding: 14px; }
+    .card {
+      background: var(--card);
+      border: 0;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(22, 24, 29, 0.04), 0 12px 32px rgba(22, 24, 29, 0.06);
+    }
+    .card.over {
+      box-shadow: 0 0 0 2px var(--accent), 0 12px 32px rgba(22, 24, 29, 0.06);
+    }
     textarea {
       width: 100%;
       min-height: 9rem;
       font: inherit;
-      padding: 10px;
-      border: 1px solid #222;
-      background: #fff;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfcfe;
       resize: vertical;
     }
+    textarea:focus { outline: 2px solid rgba(61, 126, 255, 0.35); border-color: var(--accent); }
     button {
       font: inherit;
-      padding: 10px 18px;
-      border: 1px solid #222;
-      background: #1c1c1c;
-      color: #fff;
+      font-weight: 600;
+      padding: 10px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      min-height: 44px;
     }
-    button.ghost { background: #fff; color: #1c1c1c; padding: 6px 12px; }
-    button:disabled { color: #888; background: #eee; border-color: #bbb; }
+    button.ghost {
+      background: #f3f5f8;
+      color: var(--ink);
+      padding: 8px 12px;
+    }
+    button.stop { background: #fff; color: var(--danger); box-shadow: inset 0 0 0 1px #f0c7c4; }
+    button:disabled { color: #98a0aa; background: #eef1f4; }
     #send { margin-top: 0; }
     .msg {
       display: flex;
       gap: 10px;
       align-items: flex-start;
-      border: 1px solid var(--line);
+      background: #f7f9fc;
+      border-radius: 12px;
       padding: 10px 12px;
       margin-top: 8px;
     }
@@ -91,18 +138,23 @@
     }
     .dropzone {
       margin-top: 10px;
-      border: 1px dashed var(--line);
-      padding: 14px 12px;
+      min-height: 9rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed #c5d0e0;
+      border-radius: 12px;
+      padding: 28px 16px;
       text-align: center;
       color: var(--muted);
-      background: #faf8f3;
+      background: #f7f9fc;
       font-size: 0.92rem;
       user-select: none;
     }
     .dropzone.over {
-      border-color: #1c1c1c;
-      color: var(--ink);
-      background: #fff;
+      border-color: var(--accent);
+      color: var(--accent);
+      background: #f3f7ff;
     }
     .dropzone[aria-disabled="true"] {
       opacity: 0.5;
@@ -110,9 +162,9 @@
     }
     .pending {
       margin-top: 12px;
-      border: 1px dashed var(--line);
-      padding: 10px 12px;
-      background: #faf8f3;
+      border-radius: 12px;
+      padding: 12px;
+      background: #f7f9fc;
     }
     .pending h2 { margin-bottom: 8px; }
     .pending-item {
@@ -147,16 +199,18 @@
     .progress-wrap.on { display: block; }
     .progress-bar {
       height: 8px;
-      background: #e6e1d6;
-      border: 1px solid var(--line);
+      background: #e6ebf2;
+      border-radius: 999px;
       overflow: hidden;
     }
     .progress-bar > i {
       display: block;
       height: 100%;
       width: 0;
-      background: #1c1c1c;
+      background: linear-gradient(90deg, #3d7eff, #6aa0ff);
     }
+    .progress-actions { margin-top: 10px; }
+    .progress-actions button { width: 100%; }
     .progress-text {
       margin: 6px 0 0;
       color: var(--muted);
@@ -166,30 +220,126 @@
       .grid { grid-template-columns: 1fr 1fr; align-items: start; }
       textarea { min-height: 18rem; }
     }
+    .brand-row { display: flex; align-items: center; gap: 10px; margin-top: 3px; }
+    .brand-row .mode { margin: 0; }
+    .linkish {
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 650;
+      min-height: 0;
+      padding: 0;
+    }
+    .sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(22, 24, 29, 0.28);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 16px;
+    }
+    .sheet[hidden] { display: none; }
+    .sheet-card {
+      width: min(420px, 100%);
+      background: #fff;
+      border-radius: 16px;
+      padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+      box-shadow: 0 12px 40px rgba(22, 24, 29, 0.18);
+    }
+    .sheet-card h2 { color: var(--ink); font-size: 1rem; letter-spacing: 0; }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      font-weight: 600;
+    }
+    .check input { width: 18px; height: 18px; }
+    .hint { margin: 4px 0 0 28px; color: var(--muted); font-size: 0.85rem; }
+    .ver { margin: 14px 0; color: var(--muted); font-size: 0.85rem; }
+    .sheet-card > button { width: 100%; }
+    .float-dot {
+      position: fixed;
+      z-index: 40;
+      right: 14px;
+      bottom: calc(14px + env(safe-area-inset-bottom));
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      touch-action: none;
+    }
+    .float-dot.dragging { opacity: 0.92; }
+    .float-dot button {
+      min-height: 44px;
+      box-shadow: 0 6px 20px rgba(22, 24, 29, 0.18);
+    }
+    #floatMain {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-width: 44px;
+      height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      cursor: grab;
+    }
+    .float-dot.dragging #floatMain { cursor: grabbing; }
+    .float-dot.solo #floatMain { width: 44px; padding: 0; }
+    .float-dot[hidden] { display: none; }
+    .float-send { padding: 0 14px; }
+    .float-dot i {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #b0b6bf;
+      flex: none;
+    }
+    .float-dot.ok i { background: #1f9d55; box-shadow: 0 0 0 4px rgba(31, 157, 85, 0.18); }
+    .float-dot.down i, .float-dot.dead i { background: var(--danger); box-shadow: 0 0 0 4px rgba(194, 65, 59, 0.16); }
+    .float-dot.wait i { background: #e0a100; box-shadow: 0 0 0 4px rgba(224, 161, 0, 0.2); }
+    .float-dot.busy i { background: var(--accent); box-shadow: 0 0 0 4px rgba(61, 126, 255, 0.18); }
+    .float-dot span { font-size: 0.82rem; font-weight: 700; }
+    .float-dot span[hidden] { display: none; }
     @media (max-width: 799px) {
       #send { flex: 1 1 100%; }
+      .top { align-items: flex-start; }
+      .chip { max-width: 11rem; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="top">
-      <h1>TextSend 兼容模式</h1>
+      <div class="brand">
+        <h1>TextSend</h1>
+        <div class="brand-row">
+          <p id="modeLabel" class="mode">兼容模式</p>
+          <button id="openSettings" class="linkish" type="button">设置</button>
+        </div>
+      </div>
       <div id="link" class="chip wait">连接中</div>
     </div>
-    <div id="warn" class="warn">没装 App 时用浏览器传文字、图片和文件。HTTP 加载，加密在应用层，只在可信局域网用。可点选或拖拽进待发，再点「发送待发」。特别大的文件受手机内存影响，可能失败。</div>
+    <div id="warn" class="warn">浏览器传文字、图片和文件。只在可信局域网用。中断可续传，单个最大 20GB。</div>
     <p id="status"></p>
     <div class="grid">
-      <section class="card">
+      <section class="card" id="sendCard">
         <h2>发给电脑</h2>
-        <textarea id="box" autocomplete="off" placeholder="输入文字后点「发送文字」。图片/文件可点选或拖到下方虚线框。"></textarea>
+        <textarea id="box" autocomplete="off" placeholder="输入文字后点「发送文字」。图片和文件可以直接拖进这个框，或拖到下面的区域。"></textarea>
         <div class="tools">
           <button id="send" type="button">发送文字</button>
           <button id="pickImg" class="ghost" type="button">图片</button>
           <button id="pickFile" class="ghost" type="button">文件</button>
           <button id="pickDir" class="ghost" type="button">文件夹</button>
         </div>
-        <div id="dropzone" class="dropzone" role="button" tabindex="0">拖拽文件或文件夹到这里，加入待发</div>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0">拖到这里，或直接拖进上面的输入框。松开后加入待发</div>
         <input id="inImg" class="sr-only" type="file" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.gif,.webp" multiple>
         <input id="inFile" class="sr-only" type="file" multiple>
         <input id="inDir" class="sr-only" type="file" multiple webkitdirectory>
@@ -203,6 +353,9 @@
           <div id="progressWrap" class="progress-wrap">
             <div class="progress-bar"><i id="progressBar"></i></div>
             <p id="progressText" class="progress-text"></p>
+            <div class="progress-actions">
+              <button id="stopSend" class="stop" type="button">停止传输</button>
+            </div>
           </div>
         </div>
         <h2 class="sent-title">已发出</h2>
@@ -215,6 +368,21 @@
         <div id="incoming"></div>
       </section>
     </div>
+  </div>
+  <div id="settings" class="sheet" hidden>
+    <div class="sheet-card" role="dialog" aria-labelledby="settingsTitle">
+      <h2 id="settingsTitle">设置</h2>
+      <label class="check"><input id="optFloat" type="checkbox" checked> 显示悬浮状态点</label>
+      <p class="hint">按住圆点拖动，松手记住位置。</p>
+      <label class="check"><input id="optFloatSend" type="checkbox"> 悬浮点带「发送」</label>
+      <p class="hint">滑到下面时，用悬浮点发输入框里的文字。</p>
+      <p id="verLine" class="ver">电脑端 —</p>
+      <button id="closeSettings" type="button">完成</button>
+    </div>
+  </div>
+  <div id="floatDot" class="float-dot wait solo" hidden>
+    <button id="floatMain" type="button" aria-label="连接状态"><i></i><span id="floatText" hidden></span></button>
+    <button id="floatSend" class="float-send" type="button" hidden>发送</button>
   </div>
   <script src="/bridge.js"></script>
 </body>
