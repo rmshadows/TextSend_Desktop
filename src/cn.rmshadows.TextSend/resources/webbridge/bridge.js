@@ -490,48 +490,89 @@
     var inImg = document.getElementById("inImg");
     var inFile = document.getElementById("inFile");
     var inDir = document.getElementById("inDir");
-    var fileQueue = [];
+    var warnEl = document.getElementById("warn");
+    var titleEl = document.querySelector("h1");
     var fileBusy = false;
     var alive = true;
+    var pending = [];
+    var sendSeq = 0;
+    var sendTotal = 0;
+    var sendDone = 0;
+    var dropzone = document.getElementById("dropzone");
     function lockPicks(off) {
       [pickImg, pickFile, pickDir].forEach(function (b) {
         if (b) b.disabled = off;
       });
-    }
-    try {
-      selfTest();
-    } catch (e) {
-      status.textContent = "页面加密自检失败，请重新从电脑打开。";
-      setLink("dead", "页面不可用");
-      sendBtn.disabled = true;
-      box.disabled = true;
-      lockPicks(true);
-      return;
+      if (dropzone) {
+        dropzone.setAttribute("aria-disabled", off ? "true" : "false");
+        if (off) dropzone.classList.remove("over");
+      }
     }
     var params = new URLSearchParams(location.search);
     var sid = params.get("s") || "";
+    var token = params.get("t") || "";
+    var modeHint = (params.get("m") || "").toUpperCase();
     var hash = location.hash.charAt(0) === "#" ? location.hash.slice(1) : location.hash;
     var keyB64 = new URLSearchParams(hash).get("k") || "";
-    if (!sid || !keyB64) {
-      status.textContent = "请用电脑上「兼容模式」的二维码打开，不要手打地址。";
-      setLink("dead", "未连接");
-      sendBtn.disabled = true;
-      box.disabled = true;
-      lockPicks(true);
-      return;
+    var modeA = modeHint === "A" || (!!token && !keyB64);
+    if (modeA) {
+      if (!sid || !token) {
+        status.textContent = "请用电脑上「A 明文」二维码打开，不要手打地址。";
+        setLink("dead", "未连接");
+        sendBtn.disabled = true;
+        box.disabled = true;
+        lockPicks(true);
+        return;
+      }
+      if (titleEl) titleEl.textContent = "TextSend 兼容（未加密）";
+      if (warnEl) {
+        warnEl.className = "warn danger";
+        warnEl.innerHTML = "当前安全模式：<b>兼容（未加密）</b><br>消息以明文在局域网传输，同一网络中的其他人可能看到内容。请仅在可信网络使用；不要发送密码、验证码等敏感信息。需要加密时可扫电脑上的「B 加密」码。";
+      }
+    } else {
+      try {
+        selfTest();
+      } catch (e) {
+        status.textContent = "页面加密自检失败，请重新从电脑打开。";
+        setLink("dead", "页面不可用");
+        sendBtn.disabled = true;
+        box.disabled = true;
+        lockPicks(true);
+        return;
+      }
+      if (!sid || !keyB64) {
+        status.textContent = "请用电脑上「兼容模式」的二维码打开，不要手打地址。";
+        setLink("dead", "未连接");
+        sendBtn.disabled = true;
+        box.disabled = true;
+        lockPicks(true);
+        return;
+      }
     }
-    var key;
-    try {
-      var ikm = b64urlToBytes(keyB64);
-      if (ikm.length !== 32) throw new Error("key");
-      key = hkdf(ikm, new TextEncoder().encode(sid), INFO, 32);
-    } catch (e) {
-      status.textContent = "密钥无效，请重新扫码。";
-      setLink("dead", "密钥无效");
-      sendBtn.disabled = true;
-      box.disabled = true;
-      lockPicks(true);
-      return;
+    var key = null;
+    if (!modeA) {
+      try {
+        var ikm = b64urlToBytes(keyB64);
+        if (ikm.length !== 32) throw new Error("key");
+        key = hkdf(ikm, new TextEncoder().encode(sid), INFO, 32);
+      } catch (e) {
+        status.textContent = "密钥无效，请重新扫码。";
+        setLink("dead", "密钥无效");
+        sendBtn.disabled = true;
+        box.disabled = true;
+        lockPicks(true);
+        return;
+      }
+    }
+    function qAuth() {
+      var q = "s=" + encodeURIComponent(sid);
+      if (modeA) q += "&t=" + encodeURIComponent(token);
+      return q;
+    }
+    function authHeaders(extra) {
+      var h = extra ? Object.assign({}, extra) : {};
+      if (modeA) h["Authorization"] = "Bearer " + token;
+      return h;
     }
     setLink("wait", "连接中");
     var dropped = false;
@@ -542,12 +583,16 @@
     function markDead(text) {
       alive = false;
       dropped = true;
-      fileQueue = [];
+      sendSeq++;
+      pending = [];
+      fileBusy = false;
+      setProgress(false);
+      renderPending();
       setLink("dead", text);
       sendBtn.disabled = true;
       lockPicks(true);
     }
-    var es = new EventSource("/api/events?s=" + encodeURIComponent(sid));
+    var es = new EventSource("/api/events?" + qAuth());
     var downTimer = null;
     es.onopen = function () {
       if (downTimer) {
@@ -559,12 +604,19 @@
     };
     es.addEventListener("msg", function (ev) {
       try {
-        var plain = open(key, stdB64ToBytes(String(ev.data).trim()));
-        var msg = JSON.parse(new TextDecoder().decode(plain));
+        var msg;
+        if (modeA) {
+          msg = JSON.parse(String(ev.data));
+        } else {
+          var plain = open(key, stdB64ToBytes(String(ev.data).trim()));
+          msg = JSON.parse(new TextDecoder().decode(plain));
+        }
         if (msg && msg.type === "text" && typeof msg.body === "string") addIncoming(msg.body, msg.ts);
         if (!dropped) setLink("ok", "已连接");
       } catch (e) {
-        status.textContent = "有一条下行解不开。会话可能已换，请重新扫码。";
+        status.textContent = modeA
+          ? "有一条下行读不了。会话可能已换，请重新扫码。"
+          : "有一条下行解不开。会话可能已换，请重新扫码。";
       }
     });
     es.addEventListener("bye", function () {
@@ -581,7 +633,7 @@
         downTimer = null;
         if (es.readyState === EventSource.OPEN) return;
         markDown("和电脑断开了，正在重连");
-        fetch("/api/meta?s=" + encodeURIComponent(sid), { cache: "no-store" }).then(function (r) {
+        fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
           if (r.status === 401) {
             es.close();
             markDead("会话已失效，请重新扫码");
@@ -608,18 +660,25 @@
         ts: sentAt,
         body: text
       });
-      var sealed;
-      try {
-        sealed = seal(key, new TextEncoder().encode(payload));
-      } catch (e) {
-        sendBtn.disabled = false;
-        status.textContent = "加密失败";
-        return;
+      var body;
+      var headers;
+      if (modeA) {
+        body = payload;
+        headers = authHeaders({ "Content-Type": "application/json; charset=utf-8" });
+      } else {
+        try {
+          body = seal(key, new TextEncoder().encode(payload));
+        } catch (e) {
+          sendBtn.disabled = false;
+          status.textContent = "加密失败";
+          return;
+        }
+        headers = { "Content-Type": "application/octet-stream" };
       }
-      fetch("/api/send?s=" + encodeURIComponent(sid), {
+      fetch("/api/send?" + qAuth(), {
         method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: sealed
+        headers: headers,
+        body: body
       }).then(function (res) {
         if (res.status === 204) {
           box.value = "";
@@ -646,7 +705,80 @@
       }
     });
 
-    var FILE_MAX = 32 * 1024 * 1024;
+    var pendingBox = document.getElementById("pendingBox");
+    var pendingList = document.getElementById("pendingList");
+    var pendingCount = document.getElementById("pendingCount");
+    var sendPendingBtn = document.getElementById("sendPending");
+    var clearPendingBtn = document.getElementById("clearPending");
+    var progressWrap = document.getElementById("progressWrap");
+    var progressBar = document.getElementById("progressBar");
+    var progressText = document.getElementById("progressText");
+    function fmtSize(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / (1024 * 1024)).toFixed(1) + " MB";
+    }
+    function fmtSpeed(bps) {
+      if (!bps || bps <= 0) return "—";
+      if (bps < 1024) return Math.round(bps) + " B/s";
+      if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + " KB/s";
+      return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
+    }
+    function jobLabel(job) {
+      var file = job.file;
+      var fallback = file.type === "image/jpeg" ? "粘贴.jpg"
+        : file.type === "image/gif" ? "粘贴.gif"
+        : file.type === "image/webp" ? "粘贴.webp"
+        : (file.type && file.type.indexOf("image/") === 0 ? "粘贴.png" : "file");
+      return file.webkitRelativePath || file.name || fallback;
+    }
+    function setProgress(on, pct, text) {
+      if (!progressWrap) return;
+      if (!on) {
+        progressWrap.classList.remove("on");
+        if (progressBar) progressBar.style.width = "0%";
+        if (progressText) progressText.textContent = "";
+        return;
+      }
+      progressWrap.classList.add("on");
+      if (progressBar) progressBar.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+      if (progressText) progressText.textContent = text || "";
+    }
+    function renderPending() {
+      if (!pendingBox || !pendingList) return;
+      pendingBox.hidden = pending.length === 0 && !fileBusy;
+      if (pendingCount) pendingCount.textContent = String(pending.length);
+      pendingList.innerHTML = "";
+      for (var i = 0; i < pending.length; i++) {
+        (function (idx) {
+          var job = pending[idx];
+          var row = document.createElement("div");
+          row.className = "pending-item";
+          var name = document.createElement("div");
+          name.className = "name";
+          name.textContent = jobLabel(job);
+          var meta = document.createElement("span");
+          meta.className = "meta";
+          meta.textContent = fmtSize(job.file.size || 0);
+          var rm = document.createElement("button");
+          rm.type = "button";
+          rm.textContent = "移除";
+          rm.disabled = fileBusy;
+          rm.addEventListener("click", function () {
+            if (fileBusy) return;
+            pending.splice(idx, 1);
+            renderPending();
+            status.textContent = pending.length ? ("待发 " + pending.length + " 个") : "";
+          });
+          row.appendChild(name);
+          row.appendChild(meta);
+          row.appendChild(rm);
+          pendingList.appendChild(row);
+        })(i);
+      }
+      if (sendPendingBtn) sendPendingBtn.disabled = fileBusy || pending.length === 0 || !alive;
+      if (clearPendingBtn) clearPendingBtn.disabled = fileBusy || pending.length === 0;
+    }
     function readFile(file) {
       return new Promise(function (resolve, reject) {
         var reader = new FileReader();
@@ -674,85 +806,310 @@
     }
     function looksImage(file) {
       if (file.type && file.type.indexOf("image/") === 0) return true;
-      return /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(file.name || "");
+      return /\.(png|jpe?g|gif|bmp|webp|tiff?|heic|heif)$/i.test(file.name || "");
     }
-    function uploadOne(job) {
+    function postBody(url, body, onProg) {
+      return new Promise(function (resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        var headers = authHeaders({ "Content-Type": "application/octet-stream" });
+        Object.keys(headers).forEach(function (k) { xhr.setRequestHeader(k, headers[k]); });
+        var t0 = Date.now();
+        var lastT = t0;
+        var lastLoaded = 0;
+        xhr.upload.onprogress = function (ev) {
+          if (!ev.lengthComputable || !onProg) return;
+          var now = Date.now();
+          var dt = Math.max(1, now - lastT);
+          var speed = ((ev.loaded - lastLoaded) * 1000) / dt;
+          lastT = now;
+          lastLoaded = ev.loaded;
+          var elapsed = Math.max(1, now - t0);
+          var avg = (ev.loaded * 1000) / elapsed;
+          onProg(ev.loaded, ev.total, avg || speed);
+        };
+        xhr.onload = function () {
+          resolve({ status: xhr.status });
+        };
+        xhr.onerror = function () { reject(new Error("网络错误")); };
+        xhr.onabort = function () { reject(new Error("已取消")); };
+        xhr.send(body);
+      });
+    }
+    function uploadOne(job, index, total) {
       var file = job.file;
       var fallback = file.type === "image/jpeg" ? "粘贴.jpg"
         : file.type === "image/gif" ? "粘贴.gif"
         : file.type === "image/webp" ? "粘贴.webp"
         : (file.type && file.type.indexOf("image/") === 0 ? "粘贴.png" : "file");
-      var label = file.webkitRelativePath || file.name || fallback;
-      if (file.size > FILE_MAX) return Promise.reject(new Error(label + " 超过 32MB"));
-      status.textContent = "正在加密 " + label;
+      var label = jobLabel(job);
+      var prefix = "(" + index + "/" + total + ") ";
+      status.textContent = prefix + (modeA ? "正在准备 " : "正在加密 ") + label;
+      setProgress(true, 0, prefix + "准备中…");
       return readFile(file).then(function (bytes) {
         if (!alive) throw new Error("会话已失效，请重新扫码。");
         var plain = packFile(file.name || fallback, job.asDir ? (file.webkitRelativePath || label) : "", file.type || "", job.clip, bytes);
-        var sealed = seal(key, plain);
-        status.textContent = "正在发送 " + label;
-        return fetch("/api/file?s=" + encodeURIComponent(sid), {
-          method: "POST",
-          headers: { "Content-Type": "application/octet-stream" },
-          body: sealed
+        var body = modeA ? plain : seal(key, plain);
+        status.textContent = prefix + "正在发送 " + label;
+        return postBody("/api/file?" + qAuth(), body, function (loaded, totalBytes, speed) {
+          var pct = totalBytes > 0 ? (loaded * 100 / totalBytes) : 0;
+          setProgress(true, pct, prefix + label + "  " + pct.toFixed(0) + "%  ·  " + fmtSpeed(speed));
         }).then(function (res) {
           if (res.status === 204) {
             addSent(label, Date.now());
             return;
           }
           if (res.status === 401) throw new Error("会话已失效，请重新扫码。");
-          if (res.status === 413) throw new Error(label + " 超过 32MB");
+          if (res.status === 413) throw new Error(label + " 太大，服务器拒绝（请换小一点的，或等分片续传）");
           throw new Error(label + " 发送失败（" + res.status + "）");
         });
+      }).catch(function (err) {
+        if (err && /quota|memory|分配|Array buffer/i.test(String(err.message || err))) {
+          throw new Error(label + " 太大，手机内存不够（整包加密会吃内存）");
+        }
+        throw err;
       });
     }
-    function pumpFiles() {
-      if (fileBusy || !alive) return;
-      var job = fileQueue.shift();
-      if (!job) {
+    function pumpFiles(seq) {
+      if (seq !== sendSeq) return;
+      if (!alive) {
+        fileBusy = false;
         lockPicks(false);
+        renderPending();
+        return;
+      }
+      if (!pending.length) {
+        fileBusy = false;
+        lockPicks(false);
+        setProgress(false);
+        status.textContent = "已发到电脑";
+        renderPending();
         return;
       }
       fileBusy = true;
       lockPicks(true);
+      renderPending();
+      var job = pending.shift();
+      sendDone++;
+      var index = sendDone;
+      var all = sendTotal;
       setTimeout(function () {
-        uploadOne(job).then(function () {
-          fileBusy = false;
-          if (!fileQueue.length && alive) {
-            lockPicks(false);
-            status.textContent = "已发到电脑";
-          }
-          pumpFiles();
+        if (seq !== sendSeq) return;
+        uploadOne(job, index, all).then(function () {
+          if (seq !== sendSeq) return;
+          pumpFiles(seq);
         }).catch(function (err) {
-          fileQueue = [];
+          if (seq !== sendSeq) return;
           fileBusy = false;
-          if (alive) lockPicks(false);
+          lockPicks(false);
+          setProgress(false);
+          renderPending();
           status.textContent = err && err.message ? err.message : "发送失败";
         });
-      }, 30);
+      }, 20);
+    }
+    function startPendingSend() {
+      if (!alive || fileBusy || !pending.length) return;
+      sendSeq++;
+      sendTotal = pending.length;
+      sendDone = 0;
+      var seq = sendSeq;
+      status.textContent = "开始发送 " + pending.length + " 个文件…";
+      pumpFiles(seq);
     }
     function enqueue(list, asDir) {
-      if (!alive || !list || !list.length) return;
+      if (!alive || !list || !list.length) {
+        status.textContent = "没有选到文件（若点了图片却没反应，请再用「文件」选一次）";
+        return;
+      }
       var files = [];
       for (var i = 0; i < list.length; i++) files.push(list[i]);
-      var singleImage = !asDir && files.length === 1 && looksImage(files[0]);
+      var added = 0;
       for (var j = 0; j < files.length; j++) {
-        fileQueue.push({ file: files[j], asDir: !!asDir, clip: singleImage });
+        var f = files[j];
+        if (!f) continue;
+        pending.push({
+          file: f,
+          asDir: !!asDir,
+          clip: !asDir && files.length === 1 && looksImage(f)
+        });
+        added++;
       }
-      pumpFiles();
+      renderPending();
+      if (!added) {
+        status.textContent = "没有选到文件";
+        return;
+      }
+      status.textContent = "已加入待发 " + added + " 个。点「发送待发」开始传。";
     }
     function bindPick(btn, input, asDir) {
       if (!btn || !input) return;
-      btn.addEventListener("click", function () { input.click(); });
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        if (!alive || fileBusy) return;
+        try {
+          input.value = "";
+          input.click();
+        } catch (err) {
+          status.textContent = "打不开系统选择框";
+        }
+      });
       input.addEventListener("change", function () {
-        enqueue(input.files, asDir);
-        input.value = "";
+        var list = input.files;
+        enqueue(list, asDir);
+        try { input.value = ""; } catch (err) {}
       });
     }
     bindPick(pickImg, inImg, false);
     bindPick(pickFile, inFile, false);
     bindPick(pickDir, inDir, true);
+
+    function readEntryFile(entry) {
+      return new Promise(function (resolve, reject) {
+        entry.file(resolve, reject);
+      });
+    }
+    function readDirEntries(reader) {
+      return new Promise(function (resolve, reject) {
+        var all = [];
+        function next() {
+          reader.readEntries(function (batch) {
+            if (!batch.length) {
+              resolve(all);
+              return;
+            }
+            for (var i = 0; i < batch.length; i++) all.push(batch[i]);
+            next();
+          }, reject);
+        }
+        next();
+      });
+    }
+    function walkEntry(entry, prefix, out) {
+      if (!entry) return Promise.resolve();
+      if (entry.isFile) {
+        return readEntryFile(entry).then(function (file) {
+          try {
+            Object.defineProperty(file, "webkitRelativePath", {
+              configurable: true,
+              value: (prefix ? prefix + "/" : "") + entry.name
+            });
+          } catch (err) {}
+          out.push({ file: file, asDir: !!prefix });
+        });
+      }
+      if (!entry.isDirectory) return Promise.resolve();
+      var path = (prefix ? prefix + "/" : "") + entry.name;
+      return readDirEntries(entry.createReader()).then(function (kids) {
+        var chain = Promise.resolve();
+        kids.forEach(function (kid) {
+          chain = chain.then(function () { return walkEntry(kid, path, out); });
+        });
+        return chain;
+      });
+    }
+    function collectDrop(dt) {
+      var out = [];
+      var items = dt && dt.items;
+      if (items && items.length && items[0].webkitGetAsEntry) {
+        var jobs = [];
+        for (var i = 0; i < items.length; i++) {
+          var entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+          if (entry) jobs.push(walkEntry(entry, "", out));
+        }
+        if (jobs.length) {
+          return Promise.all(jobs).then(function () { return out; });
+        }
+      }
+      var files = dt && dt.files;
+      if (files && files.length) {
+        for (var j = 0; j < files.length; j++) {
+          if (files[j]) out.push({ file: files[j], asDir: false });
+        }
+      }
+      return Promise.resolve(out);
+    }
+    function enqueueDropItems(items) {
+      if (!items || !items.length) {
+        status.textContent = "拖拽里没有可用文件";
+        return;
+      }
+      var asDir = items.some(function (it) { return it.asDir; });
+      var list = items.map(function (it) { return it.file; });
+      // 目录拖入时保留相对路径；纯文件按非目录入队
+      if (asDir) {
+        var added = 0;
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          if (!it || !it.file) continue;
+          pending.push({ file: it.file, asDir: true, clip: false });
+          added++;
+        }
+        renderPending();
+        status.textContent = added
+          ? ("已加入待发 " + added + " 个。点「发送待发」开始传。")
+          : "拖拽里没有可用文件";
+        return;
+      }
+      enqueue(list, false);
+    }
+    function bindDrop(el) {
+      if (!el) return;
+      var depth = 0;
+      function allow(e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      el.addEventListener("dragenter", function (e) {
+        allow(e);
+        if (!alive || fileBusy) return;
+        depth++;
+        el.classList.add("over");
+      });
+      el.addEventListener("dragover", function (e) {
+        allow(e);
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      });
+      el.addEventListener("dragleave", function (e) {
+        allow(e);
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) el.classList.remove("over");
+      });
+      el.addEventListener("drop", function (e) {
+        allow(e);
+        depth = 0;
+        el.classList.remove("over");
+        if (!alive || fileBusy) return;
+        status.textContent = "正在读取拖入的文件…";
+        collectDrop(e.dataTransfer).then(function (items) {
+          enqueueDropItems(items);
+        }).catch(function () {
+          status.textContent = "读取拖入文件失败";
+        });
+      });
+    }
+    // 整页拦截，避免浏览器直接打开文件；真正入队以虚线框为准，也允许拖到「发给电脑」卡片
+    ["dragenter", "dragover", "drop"].forEach(function (type) {
+      document.addEventListener(type, function (e) {
+        e.preventDefault();
+      });
+    });
+    bindDrop(dropzone);
+
+    if (sendPendingBtn) {
+      sendPendingBtn.addEventListener("click", startPendingSend);
+    }
+    if (clearPendingBtn) {
+      clearPendingBtn.addEventListener("click", function () {
+        if (fileBusy) return;
+        pending = [];
+        renderPending();
+        setProgress(false);
+        status.textContent = "已清空待发";
+      });
+    }
     document.addEventListener("paste", function (e) {
-      if (!alive) return;
+      if (!alive || fileBusy) return;
       var items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
       var found = [];
@@ -766,6 +1123,7 @@
       e.preventDefault();
       enqueue(found, false);
     });
+    renderPending();
   }
 
   var api = {

@@ -32,6 +32,7 @@
     .chip.ok { background: #e7f2e4; color: #1d6b32; border-color: #b7d7b0; }
     .chip.down, .chip.dead { background: #9c2f23; color: #fff; border-color: #9c2f23; }
     .warn { background: #fff4d6; border: 1px solid #c4a35a; padding: 10px 12px; margin: 14px 0; }
+    .warn.danger { background: #fde8e6; border-color: #c45b4a; color: #6b1f16; }
     #status { min-height: 1.5em; margin: 0 0 12px; color: var(--muted); }
     .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
     .card { background: var(--card); border: 1px solid var(--line); padding: 14px; }
@@ -76,6 +77,91 @@
     .tools button { margin: 0; }
     .empty { color: var(--muted); margin: 0; }
     .sent-title { margin-top: 16px; }
+    /* iOS 上 display:none / hidden 会导致点「图片」打不开图库 */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .dropzone {
+      margin-top: 10px;
+      border: 1px dashed var(--line);
+      padding: 14px 12px;
+      text-align: center;
+      color: var(--muted);
+      background: #faf8f3;
+      font-size: 0.92rem;
+      user-select: none;
+    }
+    .dropzone.over {
+      border-color: #1c1c1c;
+      color: var(--ink);
+      background: #fff;
+    }
+    .dropzone[aria-disabled="true"] {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    .pending {
+      margin-top: 12px;
+      border: 1px dashed var(--line);
+      padding: 10px 12px;
+      background: #faf8f3;
+    }
+    .pending h2 { margin-bottom: 8px; }
+    .pending-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-top: 1px solid var(--line);
+      font-size: 0.92rem;
+    }
+    .pending-item:first-of-type { border-top: 0; }
+    .pending-item .name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pending-item .meta { color: var(--muted); flex: none; font-size: 0.8rem; }
+    .pending-item button {
+      flex: none;
+      padding: 4px 10px;
+      font-size: 0.85rem;
+      background: #fff;
+      color: #1c1c1c;
+    }
+    .progress-wrap {
+      margin-top: 10px;
+      display: none;
+    }
+    .progress-wrap.on { display: block; }
+    .progress-bar {
+      height: 8px;
+      background: #e6e1d6;
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    .progress-bar > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: #1c1c1c;
+    }
+    .progress-text {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
     @media (min-width: 800px) {
       .grid { grid-template-columns: 1fr 1fr; align-items: start; }
       textarea { min-height: 18rem; }
@@ -91,28 +177,41 @@
       <h1>TextSend 兼容模式</h1>
       <div id="link" class="chip wait">连接中</div>
     </div>
-    <div class="warn">没装 App 时用浏览器传文字、图片和文件。HTTP 加载，加密在应用层，只在可信局域网用。单个文件不超过 32MB。</div>
+    <div id="warn" class="warn">没装 App 时用浏览器传文字、图片和文件。HTTP 加载，加密在应用层，只在可信局域网用。可点选或拖拽进待发，再点「发送待发」。特别大的文件受手机内存影响，可能失败。</div>
     <p id="status"></p>
     <div class="grid">
       <section class="card">
         <h2>发给电脑</h2>
-        <textarea id="box" autocomplete="off" placeholder="输入文字。也可直接粘贴剪贴板里的图片。"></textarea>
+        <textarea id="box" autocomplete="off" placeholder="输入文字后点「发送文字」。图片/文件可点选或拖到下方虚线框。"></textarea>
         <div class="tools">
-          <button id="send" type="button">发送</button>
+          <button id="send" type="button">发送文字</button>
           <button id="pickImg" class="ghost" type="button">图片</button>
           <button id="pickFile" class="ghost" type="button">文件</button>
           <button id="pickDir" class="ghost" type="button">文件夹</button>
         </div>
-        <input id="inImg" type="file" accept="image/*" multiple hidden>
-        <input id="inFile" type="file" multiple hidden>
-        <input id="inDir" type="file" multiple webkitdirectory hidden>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0">拖拽文件或文件夹到这里，加入待发</div>
+        <input id="inImg" class="sr-only" type="file" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.gif,.webp" multiple>
+        <input id="inFile" class="sr-only" type="file" multiple>
+        <input id="inDir" class="sr-only" type="file" multiple webkitdirectory>
+        <div id="pendingBox" class="pending" hidden>
+          <h2>待发文件（<span id="pendingCount">0</span>）</h2>
+          <div id="pendingList"></div>
+          <div class="tools">
+            <button id="sendPending" type="button">发送待发</button>
+            <button id="clearPending" class="ghost" type="button">清空</button>
+          </div>
+          <div id="progressWrap" class="progress-wrap">
+            <div class="progress-bar"><i id="progressBar"></i></div>
+            <p id="progressText" class="progress-text"></p>
+          </div>
+        </div>
         <h2 class="sent-title">已发出</h2>
         <p id="sentEmpty" class="empty">还没有</p>
         <div id="sent"></div>
       </section>
       <section class="card">
         <h2>电脑发来的</h2>
-        <p id="empty" class="empty">还没有</p>
+        <p id="empty" class="empty">还没有（目前网页桥只收文字；文件下行下一版）</p>
         <div id="incoming"></div>
       </section>
     </div>

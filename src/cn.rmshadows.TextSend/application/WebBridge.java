@@ -47,8 +47,11 @@ public final class WebBridge {
     static final long IDLE_MS = 60L * 60L * 1000L;
     private static final int MAX_PLAIN = 64 * 1024;
     private static final int MAX_SEALED = MAX_PLAIN + 4096;
-    /** 单个网页文件明文上限。密封后还要加上 nonce 和 tag。 */
-    private static final int MAX_FILE = 32 * 1024 * 1024;
+    /**
+     * 单文件明文上限。当前实现整包读入内存再密封，受 byte[] / 手机内存约束。
+     * 不做 32MB 产品限制；更大文件要等分片续传。
+     */
+    private static final int MAX_FILE = 1024 * 1024 * 1024;
     private static final int MAX_FILE_SEALED = MAX_FILE + 64 * 1024;
     private static final int MAX_CLIENTS = 8;
     private static final long PING_SEC = 15;
@@ -71,6 +74,7 @@ public final class WebBridge {
     private static long touched;
     private static boolean tickStarted;
     private static final List<SseClient> clients = new ArrayList<>();
+    private static final WebBridgeInbox INBOX = new WebBridgeInbox();
     /** 最近发给手机的密封事件。后连上的手机会补收。 */
     private static final List<byte[]> outbound = new ArrayList<>();
     private static final int MAX_OUTBOUND = 20;
@@ -163,6 +167,7 @@ public final class WebBridge {
             return;
         }
         dropClients("refreshed");
+        INBOX.discardAll();
         mint();
     }
 
@@ -292,6 +297,7 @@ public final class WebBridge {
 
     private static void expireSession() {
         dropClients("expired");
+        INBOX.discardAll();
         synchronized (LOCK) {
             aesKey = null;
             if (ikm != null) {
@@ -363,6 +369,12 @@ public final class WebBridge {
                 send(ex);
             } else if ("/api/file".equals(path)) {
                 upload(ex);
+            } else if ("/api/file/begin".equals(path)) {
+                fileBegin(ex);
+            } else if ("/api/file/chunk".equals(path)) {
+                fileChunk(ex);
+            } else if ("/api/file/finish".equals(path)) {
+                fileFinish(ex);
             } else if ("/api/events".equals(path)) {
                 events(ex);
             } else {
@@ -600,6 +612,157 @@ public final class WebBridge {
         }
         Files.write(dest, data);
         return dest;
+    }
+
+    private static void fileBegin(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] plain = openSealed(ex, 16 * 1024);
+        if (plain == null) {
+            return;
+        }
+        String id;
+        String name;
+        String rel;
+        long size;
+        boolean clip;
+        try {
+            JsonObject obj = JsonParser.parseString(new String(plain, StandardCharsets.UTF_8)).getAsJsonObject();
+            id = obj.has("id") ? obj.get("id").getAsString() : "";
+            name = obj.has("name") ? obj.get("name").getAsString() : "";
+            rel = obj.has("rel") ? obj.get("rel").getAsString() : "";
+            size = obj.has("size") ? obj.get("size").getAsLong() : -1;
+            clip = obj.has("clip") && obj.get("clip").getAsBoolean();
+        } catch (RuntimeException e) {
+            text(ex, 400, "json");
+            return;
+        }
+        String body;
+        try {
+            body = INBOX.begin(id, name, rel, size, clip);
+        } catch (IOException e) {
+            text(ex, "size".equals(e.getMessage()) ? 413 : 400, e.getMessage() == null ? "begin" : e.getMessage());
+            return;
+        }
+        touch();
+        byte[] raw = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(200, raw.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(raw);
+        }
+    }
+
+    private static void fileChunk(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        String id = query(ex, "id");
+        int index;
+        try {
+            index = Integer.parseInt(query(ex, "i"));
+        } catch (RuntimeException e) {
+            text(ex, 400, "index");
+            return;
+        }
+        byte[] plain = openSealed(ex, WebBridgeInbox.CHUNK + 4096);
+        if (plain == null) {
+            return;
+        }
+        try {
+            INBOX.chunk(id, index, plain);
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            int code = "order".equals(m) ? 409 : ("size".equals(m) ? 413 : ("missing".equals(m) ? 404 : 400));
+            text(ex, code, m.isEmpty() ? "chunk" : m);
+            return;
+        }
+        touch();
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void fileFinish(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!sessionOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        String id = query(ex, "id");
+        WebBridgeInbox.Saved saved;
+        try {
+            saved = INBOX.finish(id);
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            int code = "missing".equals(m) ? 404 : ("incomplete".equals(m) ? 409 : 400);
+            text(ex, code, m.isEmpty() ? "finish" : m);
+            return;
+        }
+        touch();
+        noteSaved(saved);
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static byte[] openSealed(HttpExchange ex, int maxSealed) throws IOException {
+        byte[] key;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return null;
+            }
+            key = aesKey;
+        }
+        byte[] buf;
+        try (InputStream in = ex.getRequestBody()) {
+            buf = in.readNBytes(maxSealed + 1);
+        }
+        if (buf.length == 0 || buf.length > maxSealed) {
+            text(ex, buf.length > maxSealed ? 413 : 400, "body");
+            return null;
+        }
+        try {
+            return AesGcm.open(key, buf);
+        } catch (Exception e) {
+            text(ex, 400, "seal");
+            return null;
+        }
+    }
+
+    private static void touch() {
+        synchronized (LOCK) {
+            if (aesKey != null) {
+                touched = System.currentTimeMillis();
+            }
+        }
+    }
+
+    private static void noteSaved(WebBridgeInbox.Saved saved) {
+        String shown = saved.path.getFileName().toString();
+        boolean wantClip = saved.clip && saved.size > 0 && saved.size <= Protocol.CLIPBOARD_IMAGE_MAX
+                && FileNames.isImageName(shown);
+        BufferedImage image = null;
+        if (wantClip) {
+            try (InputStream in = Files.newInputStream(saved.path)) {
+                image = ImageIO.read(in);
+            } catch (IOException ignored) {
+                image = null;
+            }
+        }
+        BufferedImage clipImage = image;
+        SwingUtilities.invokeLater(() -> {
+            boolean onClip = clipImage != null && PasteUtil.setClipboardImage(clipImage);
+            TextSendMain.noteWeb(onClip ? "收到图片 " + shown + "，已放入剪贴板" : "收到文件 " + shown);
+        });
     }
 
     private static void events(HttpExchange ex) throws IOException {

@@ -29,8 +29,10 @@ public final class UserConfig {
 
     private static float uiScale = 1.0f;
     private static int listenPort = 54300;
-    /** 网页桥 Way B。和 v1 的 54300 分开。 */
+    /** 网页桥端口（A/B 共用；同时只开一档）。和 v1 的 54300 分开。 */
     private static int webBridgePort = 54301;
+    /** 开启 A 时不再弹出未加密确认。 */
+    private static boolean webBridgeASkipWarn = false;
     private static boolean preferMini = false;
     private static boolean followSymlinks = false;
     private static String listenIp = "";
@@ -121,6 +123,7 @@ public final class UserConfig {
             uiScale = parseScale(p.getProperty("uiScale", "1.0"));
             listenPort = Integer.parseInt(p.getProperty("listenPort", "54300"));
             webBridgePort = parsePort(54301, p.getProperty("webBridgePort", "54301"));
+            webBridgeASkipWarn = Boolean.parseBoolean(p.getProperty("webBridgeASkipWarn", "false"));
             preferMini = Boolean.parseBoolean(p.getProperty("preferMini", "false"));
             followSymlinks = Boolean.parseBoolean(p.getProperty("followSymlinks", "false"));
             listenIp = p.getProperty("listenIp", "").trim();
@@ -171,6 +174,7 @@ public final class UserConfig {
             p.setProperty("uiScale", Float.toString(uiScale));
             p.setProperty("listenPort", Integer.toString(listenPort));
             p.setProperty("webBridgePort", Integer.toString(webBridgePort));
+            p.setProperty("webBridgeASkipWarn", Boolean.toString(webBridgeASkipWarn));
             p.setProperty("preferMini", Boolean.toString(preferMini));
             p.setProperty("followSymlinks", Boolean.toString(followSymlinks));
             p.setProperty("listenIp", listenIp == null ? "" : listenIp);
@@ -235,6 +239,7 @@ public final class UserConfig {
         uiScale = 1.0f;
         listenPort = 54300;
         webBridgePort = 54301;
+        webBridgeASkipWarn = false;
         preferMini = false;
         followSymlinks = false;
         listenIp = "";
@@ -283,6 +288,15 @@ public final class UserConfig {
             return;
         }
         webBridgePort = port;
+        save();
+    }
+
+    public static boolean isWebBridgeASkipWarn() {
+        return webBridgeASkipWarn;
+    }
+
+    public static void setWebBridgeASkipWarn(boolean v) {
+        webBridgeASkipWarn = v;
         save();
     }
 
