@@ -58,6 +58,7 @@ import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.BooleanSupplier;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -501,7 +502,7 @@ public class TextSendMain {
         buttonSettings.setToolTipText("局域网探测、授权限流/冷却/黑名单等");
         buttonSettings.addActionListener(e -> showSettings());
         buttonRole.setToolTipText("在服务端 / 客户端之间切换（已连接时不可用）");
-        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件。兼容模式开着且没有 v1 客户端时，文字发给浏览器里的手机。");
+        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件。没有 v1 客户端、兼容模式开着时，文字和文件发给浏览器里的手机。");
         buttonFile.setToolTipText("选择文件加入待发列表");
         buttonQr.setToolTipText("显示连接二维码（服务端）；手动打开后连上也不自动关");
         toggleMini.setToolTipText("置顶小窗 / 恢复大窗");
@@ -916,7 +917,7 @@ public class TextSendMain {
             buttonBrowse.setToolTipText("<html>左键：选文件<br>Shift+左键：打勾选多个文件夹<br>右键：系统文件选择框</html>");
         }
         if (buttonSend != null && !miniMode) {
-            buttonSend.setToolTipText("发送文字；列表有选中则发文件（Ctrl+Enter 同效）");
+            buttonSend.setToolTipText("发送文字；列表有选中则发文件（Ctrl+Enter 同效）。没有 v1 客户端时发给兼容模式网页。");
         }
         if (buttonQr != null) {
             buttonQr.setToolTipText(isServerMode
@@ -2123,6 +2124,20 @@ public class TextSendMain {
         }
         if (WebBridgeA.isRunning() && WebBridgeA.hasSession()) {
             return WebBridgeA.pushText(text);
+        }
+        return 0;
+    }
+
+    /** 没有 v1 客户端时，把文件交给当前网页桥。返回值同 {@link WebBridge#pushFile}。 */
+    private static int pushFileToWebBridge(Path path, String tree, String rel,
+                                           BooleanSupplier cancelled, int seq, int of) throws Exception {
+        WebBridgeOutbox.Progress progress = (name, done, total) ->
+                FILE_IO.onProgress(false, name, done, total, seq, of);
+        if (WebBridge.isRunning() && WebBridge.hasSession()) {
+            return WebBridge.pushFile(path, tree, rel, cancelled, progress);
+        }
+        if (WebBridgeA.isRunning() && WebBridgeA.hasSession()) {
+            return WebBridgeA.pushFile(path, tree, rel, cancelled, progress);
         }
         return 0;
     }
@@ -4153,7 +4168,7 @@ public class TextSendMain {
                 · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
-                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书（未做）。A/B/C 同时只开一档，共用网页端口（默认 54301）；开另一档会关掉当前档。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。有 v1 客户端时「发送」仍优先走原来的连接。安卓和电脑客户端仍用「二维码」。
+                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书（未做）。A/B/C 同时只开一档，共用网页端口（默认 54301）；开另一档会关掉当前档。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。有 v1 客户端时「发送」仍优先走原来的连接。没有客户端、网页开着时，文字和文件发给网页；网页可预览图片、下载选中或全部、清空。安卓和电脑客户端仍用「二维码」。
                 · 「在线」：待授权和已连接。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台。
                 · 「设置」：探测、限流、冷却、黑名单、人数上限。
                 · 「帮助」：本页。F1 同样。
@@ -5197,11 +5212,12 @@ public class TextSendMain {
         int peers = 1;
         if (isServerMode) {
             peers = TsServer.aliveCountCurrent();
-            if (peers < 0) {
-                flashStatus("服务未运行");
+            boolean bridge = webBridgeReady();
+            if (peers < 0 && !bridge) {
+                flashStatus(webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行");
                 return;
             }
-            if (peers == 0) {
+            if (peers <= 0 && !bridge) {
                 flashStatus("没有已连接的客户端");
                 return;
             }
@@ -5271,12 +5287,35 @@ public class TextSendMain {
                             of = so[1];
                         }
                         if (isServerMode) {
-                            int n = TsServer.sendFileToAllCurrent(path, cancelFileSend::get, tree, rel, seq, of);
-                            if (n < 0) {
-                                err = "服务未运行";
+                            int alive = TsServer.aliveCountCurrent();
+                            if (alive > 0) {
+                                int n = TsServer.sendFileToAllCurrent(path, cancelFileSend::get, tree, rel, seq, of);
+                                if (n < 0) {
+                                    err = "服务未运行";
+                                    break sendMore;
+                                }
+                                if (n == 0) {
+                                    err = "没有已连接的客户端";
+                                    break sendMore;
+                                }
+                            } else if (webBridgeReady()) {
+                                int n = pushFileToWebBridge(path, tree, rel, cancelFileSend::get, seq, of);
+                                if (n == 0) {
+                                    err = "兼容模式会话已过期";
+                                    break sendMore;
+                                }
+                                if (n == -1) {
+                                    err = "文件超过 20GB";
+                                    break sendMore;
+                                }
+                                if (n == -2) {
+                                    err = "网页收件已满，请在手机上清空";
+                                    break sendMore;
+                                }
+                            } else if (alive < 0 || !isServerRunning()) {
+                                err = webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行";
                                 break sendMore;
-                            }
-                            if (n == 0) {
+                            } else {
                                 err = "没有已连接的客户端";
                                 break sendMore;
                             }
@@ -5359,8 +5398,8 @@ public class TextSendMain {
 
     private static boolean readyToSend() {
         if (isServerMode) {
-            if (!isServerRunning()) {
-                flashStatus("服务未运行");
+            if (!isServerRunning() && !webBridgeReady()) {
+                flashStatus(webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行");
                 return false;
             }
         } else if (!isClientConnected || clientPeer == null || !clientPeer.isAlive()) {

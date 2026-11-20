@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -168,6 +169,7 @@ public final class WebBridge {
         }
         dropClients("refreshed");
         INBOX.discardAll();
+        WebBridgeOutbox.shared().discardAll();
         mint();
     }
 
@@ -209,6 +211,66 @@ public final class WebBridge {
             }
         }
         return 1;
+    }
+
+    /**
+     * 把本机文件交给网页收件列表。正文不进 SSE，手机按 id 分片来拉。
+     *
+     * @return 1 已通知；0 会话无效；-1 超过 20GB；-2 列表已满
+     */
+    public static int pushFile(Path path, String tree, String rel,
+                               BooleanSupplier cancelled, WebBridgeOutbox.Progress progress) throws IOException {
+        if (!hasSession()) {
+            return 0;
+        }
+        WebBridgeOutbox.Item item;
+        try {
+            item = WebBridgeOutbox.shared().offer(path, tree, rel, cancelled, progress);
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            if ("size".equals(m)) {
+                return -1;
+            }
+            if ("full".equals(m)) {
+                return -2;
+            }
+            throw e;
+        }
+        try {
+            if (!publish(item.event("file"))) {
+                WebBridgeOutbox.shared().drop(item.id);
+                return 0;
+            }
+        } catch (IOException e) {
+            WebBridgeOutbox.shared().drop(item.id);
+            throw e;
+        }
+        return 1;
+    }
+
+    /** 文件事件不进文字那 20 条补发。后连上的手机走 /api/out/list。 */
+    private static boolean publish(JsonObject o) throws IOException {
+        byte[] ev;
+        List<SseClient> copy;
+        synchronized (LOCK) {
+            if (aesKey == null) {
+                return false;
+            }
+            touched = System.currentTimeMillis();
+            try {
+                byte[] sealed = AesGcm.seal(aesKey, o.toString().getBytes(StandardCharsets.UTF_8));
+                ev = sse("msg", Base64.getEncoder().encodeToString(sealed));
+            } catch (Exception e) {
+                throw new IOException("seal", e);
+            }
+            copy = new ArrayList<>(clients);
+        }
+        for (SseClient c : copy) {
+            if (!c.write(ev)) {
+                drop(c);
+            }
+        }
+        return true;
     }
 
     private static void ensureHook() {
@@ -298,6 +360,7 @@ public final class WebBridge {
     private static void expireSession() {
         dropClients("expired");
         INBOX.discardAll();
+        WebBridgeOutbox.shared().discardAll();
         synchronized (LOCK) {
             aesKey = null;
             if (ikm != null) {
@@ -325,6 +388,7 @@ public final class WebBridge {
         HttpServer hs;
         ExecutorService pool;
         List<SseClient> copy;
+        boolean dropBox = false;
         synchronized (LOCK) {
             hs = server;
             server = null;
@@ -333,6 +397,7 @@ public final class WebBridge {
             copy = new ArrayList<>(clients);
             clients.clear();
             if (clearSession) {
+                dropBox = true;
                 aesKey = null;
                 sid = null;
                 if (ikm != null) {
@@ -341,6 +406,9 @@ public final class WebBridge {
                 ikm = null;
                 outbound.clear();
             }
+        }
+        if (dropBox) {
+            WebBridgeOutbox.shared().discardAll();
         }
         for (SseClient c : copy) {
             c.close();
@@ -377,6 +445,14 @@ public final class WebBridge {
                 fileFinish(ex);
             } else if ("/api/file/cancel".equals(path)) {
                 fileCancel(ex);
+            } else if ("/api/out/list".equals(path)) {
+                outList(ex);
+            } else if ("/api/out/chunk".equals(path)) {
+                outChunk(ex);
+            } else if ("/api/out/drop".equals(path)) {
+                outDrop(ex);
+            } else if ("/api/out/clear".equals(path)) {
+                outClear(ex);
             } else if ("/api/events".equals(path)) {
                 events(ex);
             } else {
@@ -782,6 +858,126 @@ public final class WebBridge {
             boolean onClip = clipImage != null && PasteUtil.setClipboardImage(clipImage);
             TextSendMain.noteWeb(onClip ? "收到图片 " + shown + "，已放入剪贴板" : "收到文件 " + shown);
         });
+    }
+
+    private static void outList(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] key;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return;
+            }
+            key = aesKey;
+            touched = System.currentTimeMillis();
+        }
+        byte[] plain = WebBridgeOutbox.shared().listJson().getBytes(StandardCharsets.UTF_8);
+        byte[] body;
+        try {
+            body = AesGcm.seal(key, plain);
+        } catch (Exception e) {
+            text(ex, 500, "seal");
+            return;
+        }
+        writeBytes(ex, "application/octet-stream", body);
+    }
+
+    private static void outChunk(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        byte[] key;
+        synchronized (LOCK) {
+            if (!sameSid(query(ex, "s")) || aesKey == null) {
+                text(ex, 401, "session");
+                return;
+            }
+            key = aesKey;
+            touched = System.currentTimeMillis();
+        }
+        int index;
+        try {
+            index = Integer.parseInt(query(ex, "i"));
+        } catch (RuntimeException e) {
+            text(ex, 400, "index");
+            return;
+        }
+        byte[] plain;
+        try {
+            plain = WebBridgeOutbox.shared().readChunk(query(ex, "id"), index);
+        } catch (IOException e) {
+            String m = e.getMessage() == null ? "" : e.getMessage();
+            int code = "missing".equals(m) ? 404 : 400;
+            text(ex, code, m.isEmpty() ? "chunk" : m);
+            return;
+        }
+        byte[] body;
+        try {
+            body = AesGcm.seal(key, plain);
+        } catch (Exception e) {
+            text(ex, 500, "seal");
+            return;
+        }
+        writeBytes(ex, "application/octet-stream", body);
+    }
+
+    private static void outDrop(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!sessionOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        String id = query(ex, "id");
+        if (WebBridgeOutbox.shared().drop(id) != null) {
+            JsonObject o = new JsonObject();
+            o.addProperty("v", 1);
+            o.addProperty("type", "file-gone");
+            o.addProperty("id", id == null ? "" : id);
+            publish(o);
+        }
+        touch();
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void outClear(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!sessionOk(ex)) {
+            text(ex, 401, "session");
+            return;
+        }
+        WebBridgeOutbox.shared().clear();
+        JsonObject o = new JsonObject();
+        o.addProperty("v", 1);
+        o.addProperty("type", "file-clear");
+        publish(o);
+        touch();
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(204, -1);
+        ex.close();
+    }
+
+    private static void writeBytes(HttpExchange ex, String type, byte[] body) throws IOException {
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", type);
+        h.set("Cache-Control", "no-store");
+        h.set("Referrer-Policy", "no-referrer");
+        h.set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, body.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(body);
+        }
     }
 
     private static void events(HttpExchange ex) throws IOException {

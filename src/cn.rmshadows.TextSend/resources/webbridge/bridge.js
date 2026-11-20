@@ -682,6 +682,10 @@
       setLink("dead", text);
       sendBtn.disabled = true;
       lockPicks(true);
+      ["dlSelected", "dlAll", "clearIn"].forEach(function (id) {
+        var b = document.getElementById(id);
+        if (b) b.disabled = true;
+      });
     }
     var es = new EventSource("/api/events?" + qAuth());
     var downTimer = null;
@@ -693,6 +697,7 @@
       dropped = false;
       setLink("ok", "已连接");
       pullMeta();
+      pullOutbox();
     };
     function pullMeta() {
       fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
@@ -703,6 +708,7 @@
       }).catch(function () {});
     }
     pullMeta();
+    pullOutbox();
     es.addEventListener("msg", function (ev) {
       try {
         var msg;
@@ -713,6 +719,9 @@
           msg = JSON.parse(new TextDecoder().decode(plain));
         }
         if (msg && msg.type === "text" && typeof msg.body === "string") addIncoming(msg.body, msg.ts);
+        else if (msg && msg.type === "file" && msg.id) addIncomingFile(msg);
+        else if (msg && msg.type === "file-gone" && msg.id) removeIncomingFile(msg.id);
+        else if (msg && msg.type === "file-clear") clearIncomingFiles();
         if (!dropped) setLink("ok", "已连接");
       } catch (e) {
         status.textContent = modeA
@@ -819,7 +828,8 @@
     function fmtSize(n) {
       if (n < 1024) return n + " B";
       if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-      return (n / (1024 * 1024)).toFixed(1) + " MB";
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+      return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
     }
     function fmtSpeed(bps) {
       if (!bps || bps <= 0) return "—";
@@ -957,7 +967,7 @@
         var job = sealWait[ev.data.n];
         if (!job) return;
         delete sealWait[ev.data.n];
-        if (ev.data.ok && ev.data.sealed) job.resolve(ev.data.sealed);
+        if (ev.data.ok && (ev.data.sealed || ev.data.plain)) job.resolve(ev.data.sealed || ev.data.plain);
         else job.fail();
       };
       w.onerror = function (ev) {
@@ -1016,6 +1026,350 @@
         }
       });
     }
+    var OUT_CHUNK = 1024 * 1024;
+    var PREVIEW_MAX = 20 * 1024 * 1024;
+    var dlBusy = false;
+    var dlSelected = document.getElementById("dlSelected");
+    var dlAll = document.getElementById("dlAll");
+    var clearInBtn = document.getElementById("clearIn");
+    function pullOutbox() {
+      fetch("/api/out/list?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
+        if (!r.ok) return null;
+        return r.arrayBuffer();
+      }).then(function (buf) {
+        if (!buf || !alive) return;
+        var bytes = new Uint8Array(buf);
+        var plain = modeA ? bytes : open(key, bytes);
+        var msg = JSON.parse(new TextDecoder().decode(plain));
+        var items = msg && msg.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) addIncomingFile(items[i]);
+      }).catch(function () {});
+    }
+    function incomingHost() {
+      return document.getElementById("incoming");
+    }
+    function syncEmpty() {
+      var host = incomingHost();
+      var empty = document.getElementById("empty");
+      if (empty && host) empty.hidden = host.children.length > 0;
+    }
+    function cardOf(id) {
+      var host = incomingHost();
+      if (!host) return null;
+      var cards = host.querySelectorAll(".in-file");
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].getAttribute("data-id") === id) return cards[i];
+      }
+      return null;
+    }
+    function allFileItems() {
+      var host = incomingHost();
+      var out = [];
+      if (!host) return out;
+      var cards = host.querySelectorAll(".in-file");
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i]._item) out.push(cards[i]._item);
+      }
+      return out;
+    }
+    function selectedFileItems() {
+      var host = incomingHost();
+      var out = [];
+      if (!host) return out;
+      var cards = host.querySelectorAll(".in-file");
+      for (var i = 0; i < cards.length; i++) {
+        var box = cards[i].querySelector("input");
+        if (box && box.checked && cards[i]._item) out.push(cards[i]._item);
+      }
+      return out;
+    }
+    function paintInTools() {
+      var n = allFileItems().length;
+      var sel = selectedFileItems().length;
+      var off = !alive || dlBusy;
+      if (dlSelected) dlSelected.disabled = off || sel === 0;
+      if (dlAll) dlAll.disabled = off || n === 0;
+      if (clearInBtn) clearInBtn.disabled = off || (incomingHost() && incomingHost().children.length === 0);
+    }
+    function setNote(card, text) {
+      if (!card || !card.isConnected) return;
+      var note = card.querySelector(".file-note");
+      if (note) note.textContent = text || "";
+    }
+    function mimeOf(name) {
+      var n = String(name || "").toLowerCase();
+      if (/\.png$/.test(n)) return "image/png";
+      if (/\.gif$/.test(n)) return "image/gif";
+      if (/\.webp$/.test(n)) return "image/webp";
+      if (/\.jpe?g$/.test(n)) return "image/jpeg";
+      if (/\.bmp$/.test(n)) return "image/bmp";
+      return "application/octet-stream";
+    }
+    function openOnPage(sealed) {
+      return new Promise(function (resolve, reject) {
+        setTimeout(function () {
+          try { resolve(open(key, sealed)); }
+          catch (err) { reject(new Error("解不开")); }
+        }, 0);
+      });
+    }
+    function openOrRaw(bytes) {
+      if (modeA || !key) return Promise.resolve(bytes);
+      var sealed = new Uint8Array(bytes);
+      ensurePool();
+      if (!pool.length) return openOnPage(sealed);
+      var worker = pool[poolCursor % pool.length];
+      poolCursor++;
+      return new Promise(function (resolve, reject) {
+        var n = ++sealSeq;
+        var settled = false;
+        function ok(out) {
+          if (settled) return;
+          settled = true;
+          resolve(out);
+        }
+        function fail() {
+          if (settled) return;
+          settled = true;
+          openOnPage(sealed).then(ok, reject);
+        }
+        sealWait[n] = { resolve: ok, fail: fail };
+        try {
+          var copy = new Uint8Array(sealed);
+          worker.postMessage({ n: n, op: "open", key: new Uint8Array(key), sealed: copy }, [copy.buffer]);
+        } catch (err) {
+          delete sealWait[n];
+          dropWorker(worker);
+          fail();
+        }
+      });
+    }
+    function fetchChunk(id, index) {
+      return fetch("/api/out/chunk?" + qAuth() + "&id=" + encodeURIComponent(id) + "&i=" + index, {
+        cache: "no-store",
+        headers: authHeaders()
+      }).then(function (r) {
+        if (r.status === 404) throw new Error("文件已不在电脑上");
+        if (!r.ok) throw new Error("下载失败");
+        return r.arrayBuffer();
+      }).then(function (buf) {
+        return openOrRaw(new Uint8Array(buf));
+      });
+    }
+    function pullFile(item, onProg) {
+      var size = item.size || 0;
+      var chunks = size === 0 ? 0 : Math.ceil(size / OUT_CHUNK);
+      return new Promise(function (resolve, reject) {
+        if (!chunks) {
+          resolve(new Blob([], { type: mimeOf(item.name) }));
+          return;
+        }
+        var parts = new Array(chunks);
+        var next = 0;
+        var inflight = 0;
+        var failed = false;
+        var parallel = 2;
+        function pump() {
+          if (failed) return;
+          if (next >= chunks && inflight === 0) {
+            resolve(new Blob(parts, { type: mimeOf(item.name) }));
+            return;
+          }
+          while (inflight < parallel && next < chunks) {
+            (function (i) {
+              inflight++;
+              fetchChunk(item.id, i).then(function (bytes) {
+                if (failed) return;
+                parts[i] = bytes;
+                inflight--;
+                if (onProg) {
+                  var done = 0;
+                  for (var k = 0; k < parts.length; k++) {
+                    if (parts[k]) done += parts[k].length;
+                  }
+                  onProg(Math.min(size, done), size);
+                }
+                pump();
+              }, function (err) {
+                if (failed) return;
+                failed = true;
+                reject(err);
+              });
+            })(next);
+            next++;
+          }
+        }
+        pump();
+      });
+    }
+    function anchorDownload(blob, name) {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = name || "file";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+    }
+    function saveBlob(blob, name) {
+      var filename = name || "file";
+      var file = null;
+      try {
+        file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+      } catch (e) {}
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file] }).catch(function (err) {
+          if (err && err.name === "AbortError") return;
+          anchorDownload(blob, filename);
+        });
+      }
+      anchorDownload(blob, filename);
+      return Promise.resolve();
+    }
+    function downloadItems(items) {
+      if (!items || !items.length || dlBusy || !alive) return;
+      dlBusy = true;
+      paintInTools();
+      var i = 0;
+      function next() {
+        if (!alive) {
+          dlBusy = false;
+          paintInTools();
+          return;
+        }
+        if (i >= items.length) {
+          dlBusy = false;
+          paintInTools();
+          status.textContent = "已下载 " + items.length + " 个";
+          return;
+        }
+        var it = items[i++];
+        setNote(cardOf(it.id), "下载中");
+        pullFile(it, function (done, total) {
+          setNote(cardOf(it.id), "下载 " + fmtSize(done) + " / " + fmtSize(total));
+        }).then(function (blob) {
+          return saveBlob(blob, it.name).then(function () {
+            setNote(cardOf(it.id), "已下载");
+            setTimeout(next, 350);
+          });
+        }).catch(function (err) {
+          setNote(cardOf(it.id), (err && err.message) || "下载失败");
+          dlBusy = false;
+          paintInTools();
+          status.textContent = (err && err.message) || "下载失败";
+        });
+      }
+      next();
+    }
+    function addIncomingFile(msg) {
+      if (!msg || !msg.id) return;
+      if (cardOf(String(msg.id))) return;
+      var host = incomingHost();
+      if (!host) return;
+      var item = {
+        id: String(msg.id),
+        name: msg.name ? String(msg.name) : "file",
+        rel: msg.rel ? String(msg.rel) : "",
+        size: typeof msg.size === "number" ? msg.size : 0,
+        kind: msg.kind === "image" ? "image" : "file",
+        ts: msg.ts || Date.now()
+      };
+      var box = document.createElement("div");
+      box.className = "msg in-file";
+      box.setAttribute("data-id", item.id);
+      box._item = item;
+      var pick = document.createElement("label");
+      pick.className = "pick";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.addEventListener("change", paintInTools);
+      pick.appendChild(cb);
+      var main = document.createElement("div");
+      main.className = "main";
+      var when = document.createElement("div");
+      when.className = "when";
+      when.textContent = fmtTime(item.ts) + "  ·  " + fmtSize(item.size);
+      var fname = document.createElement("div");
+      fname.className = "fname";
+      fname.textContent = item.name;
+      main.appendChild(when);
+      main.appendChild(fname);
+      if (item.rel && item.rel !== item.name) {
+        var rel = document.createElement("div");
+        rel.className = "rel";
+        rel.textContent = item.rel;
+        main.appendChild(rel);
+      }
+      var note = document.createElement("p");
+      note.className = "file-note";
+      main.appendChild(note);
+      var img = document.createElement("img");
+      img.className = "preview";
+      img.alt = "";
+      img.hidden = true;
+      main.appendChild(img);
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ghost";
+      btn.textContent = "下载";
+      btn.addEventListener("click", function () {
+        downloadItems([item]);
+      });
+      box.appendChild(pick);
+      box.appendChild(main);
+      box.appendChild(btn);
+      host.insertBefore(box, host.firstChild);
+      syncEmpty();
+      paintInTools();
+      if (item.kind === "image" && item.size > 0 && item.size <= PREVIEW_MAX) {
+        setNote(box, "预览中");
+        pullFile(item, null).then(function (blob) {
+          if (!box.isConnected) return;
+          var url = URL.createObjectURL(blob);
+          img.src = url;
+          img.hidden = false;
+          box._preview = url;
+          setNote(box, "");
+        }).catch(function () {
+          setNote(box, "预览失败，可下载");
+        });
+      } else if (item.kind === "image") {
+        setNote(box, "图片较大，请下载后查看");
+      }
+    }
+    function removeIncomingFile(id) {
+      var card = cardOf(String(id));
+      if (!card) return;
+      if (card._preview) URL.revokeObjectURL(card._preview);
+      card.remove();
+      syncEmpty();
+      paintInTools();
+    }
+    function clearIncomingFiles() {
+      var host = incomingHost();
+      if (!host) return;
+      var cards = host.querySelectorAll(".in-file");
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i]._preview) URL.revokeObjectURL(cards[i]._preview);
+      }
+      while (host.firstChild) host.removeChild(host.firstChild);
+      syncEmpty();
+      paintInTools();
+    }
+    if (dlSelected) dlSelected.addEventListener("click", function () { downloadItems(selectedFileItems()); });
+    if (dlAll) dlAll.addEventListener("click", function () { downloadItems(allFileItems()); });
+    if (clearInBtn) clearInBtn.addEventListener("click", function () {
+      if (!alive || dlBusy) return;
+      fetch("/api/out/clear?" + qAuth(), { method: "POST", headers: authHeaders() }).then(function (r) {
+        if (!r.ok) throw new Error("清空失败");
+        clearIncomingFiles();
+      }).catch(function (err) {
+        status.textContent = (err && err.message) || "清空失败";
+      });
+    });
+    paintInTools();
     function readSlice(file, off, len) {
       return new Promise(function (resolve, reject) {
         var blob = file.slice(off, Math.min(file.size, off + len));
@@ -1659,8 +2013,14 @@
   if (typeof document === "undefined" && typeof importScripts === "function") {
     root.onmessage = function (e) {
       try {
-        var d = e.data;
-        var sealed = seal(new Uint8Array(d.key), new Uint8Array(d.plain));
+        var d = e.data || {};
+        var keyBytes = new Uint8Array(d.key);
+        if (d.op === "open") {
+          var plain = open(keyBytes, new Uint8Array(d.sealed));
+          root.postMessage({ n: d.n, ok: 1, plain: plain }, [plain.buffer]);
+          return;
+        }
+        var sealed = seal(keyBytes, new Uint8Array(d.plain));
         root.postMessage({ n: d.n, ok: 1, sealed: sealed }, [sealed.buffer]);
       } catch (err) {
         root.postMessage({ n: e.data && e.data.n, ok: 0 });
