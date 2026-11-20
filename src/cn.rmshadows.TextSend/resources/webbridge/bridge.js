@@ -429,7 +429,7 @@
   var floatKind = "wait";
   var floatBusy = false;
   var floatPct = 0;
-  var floatPrefs = { show: true, send: false, x: null, y: null };
+  var floatPrefs = { show: true, send: false, dlPrompt: false, x: null, y: null };
   var floatDragged = false;
   function loadFloatPrefs() {
     try {
@@ -438,6 +438,7 @@
       var o = JSON.parse(raw);
       if (o.show === false) floatPrefs.show = false;
       if (o.send) floatPrefs.send = true;
+      if (o.dlPrompt) floatPrefs.dlPrompt = true;
       if (typeof o.x === "number" && typeof o.y === "number") {
         floatPrefs.x = o.x;
         floatPrefs.y = o.y;
@@ -1029,8 +1030,11 @@
     var OUT_CHUNK = 1024 * 1024;
     var PREVIEW_MAX = 20 * 1024 * 1024;
     var dlBusy = false;
+    var dlCtrl = null;
+    var dlCurrentId = "";
     var dlSelected = document.getElementById("dlSelected");
     var dlAll = document.getElementById("dlAll");
+    var stopInBtn = document.getElementById("stopIn");
     var clearInBtn = document.getElementById("clearIn");
     function pullOutbox() {
       fetch("/api/out/list?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
@@ -1084,13 +1088,42 @@
       }
       return out;
     }
+    function paintCardBtn(card) {
+      if (!card) return;
+      var btn = card._btn;
+      if (!btn) return;
+      var id = card._item && card._item.id;
+      if (dlBusy && id && id === dlCurrentId) {
+        btn.textContent = "停止";
+        btn.className = "stop";
+        btn.disabled = false;
+        return;
+      }
+      if (card._blob) {
+        btn.textContent = "保存";
+        btn.className = "ghost";
+        btn.disabled = !alive || dlBusy;
+        return;
+      }
+      btn.textContent = "下载";
+      btn.className = "ghost";
+      btn.disabled = !alive || dlBusy;
+    }
     function paintInTools() {
       var n = allFileItems().length;
       var sel = selectedFileItems().length;
       var off = !alive || dlBusy;
       if (dlSelected) dlSelected.disabled = off || sel === 0;
       if (dlAll) dlAll.disabled = off || n === 0;
+      if (stopInBtn) stopInBtn.hidden = !dlBusy;
       if (clearInBtn) clearInBtn.disabled = off || (incomingHost() && incomingHost().children.length === 0);
+      var host = incomingHost();
+      if (!host) return;
+      var cards = host.querySelectorAll(".in-file");
+      for (var i = 0; i < cards.length; i++) paintCardBtn(cards[i]);
+    }
+    function stopIncoming() {
+      if (dlCtrl) dlCtrl.abort();
     }
     function setNote(card, text) {
       if (!card || !card.isConnected) return;
@@ -1145,10 +1178,11 @@
         }
       });
     }
-    function fetchChunk(id, index) {
+    function fetchChunk(id, index, signal) {
       return fetch("/api/out/chunk?" + qAuth() + "&id=" + encodeURIComponent(id) + "&i=" + index, {
         cache: "no-store",
-        headers: authHeaders()
+        headers: authHeaders(),
+        signal: signal
       }).then(function (r) {
         if (r.status === 404) throw new Error("文件已不在电脑上");
         if (!r.ok) throw new Error("下载失败");
@@ -1157,10 +1191,23 @@
         return openOrRaw(new Uint8Array(buf));
       });
     }
-    function pullFile(item, onProg) {
+    function pullFile(item, onProg, signal) {
       var size = item.size || 0;
       var chunks = size === 0 ? 0 : Math.ceil(size / OUT_CHUNK);
       return new Promise(function (resolve, reject) {
+        var failed = false;
+        function die(err) {
+          if (failed) return;
+          failed = true;
+          reject(err || new DOMException("已停止", "AbortError"));
+        }
+        if (signal) {
+          if (signal.aborted) {
+            die();
+            return;
+          }
+          signal.addEventListener("abort", function () { die(); });
+        }
         if (!chunks) {
           resolve(new Blob([], { type: mimeOf(item.name) }));
           return;
@@ -1168,10 +1215,13 @@
         var parts = new Array(chunks);
         var next = 0;
         var inflight = 0;
-        var failed = false;
         var parallel = 2;
         function pump() {
           if (failed) return;
+          if (signal && signal.aborted) {
+            die();
+            return;
+          }
           if (next >= chunks && inflight === 0) {
             resolve(new Blob(parts, { type: mimeOf(item.name) }));
             return;
@@ -1179,8 +1229,8 @@
           while (inflight < parallel && next < chunks) {
             (function (i) {
               inflight++;
-              fetchChunk(item.id, i).then(function (bytes) {
-                if (failed) return;
+              fetchChunk(item.id, i, signal).then(function (bytes) {
+                if (failed || (signal && signal.aborted)) return;
                 parts[i] = bytes;
                 inflight--;
                 if (onProg) {
@@ -1192,9 +1242,11 @@
                 }
                 pump();
               }, function (err) {
-                if (failed) return;
-                failed = true;
-                reject(err);
+                if (signal && signal.aborted) {
+                  die();
+                  return;
+                }
+                die(err);
               });
             })(next);
             next++;
@@ -1213,52 +1265,61 @@
       a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
     }
-    function saveBlob(blob, name) {
-      var filename = name || "file";
-      var file = null;
-      try {
-        file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
-      } catch (e) {}
-      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-        return navigator.share({ files: [file] }).catch(function (err) {
-          if (err && err.name === "AbortError") return;
-          anchorDownload(blob, filename);
-        });
-      }
-      anchorDownload(blob, filename);
-      return Promise.resolve();
+    function isAbort(err) {
+      return !!(err && (err.name === "AbortError" || err.message === "已停止"));
     }
     function downloadItems(items) {
       if (!items || !items.length || dlBusy || !alive) return;
       dlBusy = true;
+      dlCtrl = new AbortController();
+      var signal = dlCtrl.signal;
       paintInTools();
       var i = 0;
+      function finish() {
+        dlBusy = false;
+        dlCtrl = null;
+        dlCurrentId = "";
+        paintInTools();
+      }
       function next() {
-        if (!alive) {
-          dlBusy = false;
-          paintInTools();
+        if (!alive || signal.aborted) {
+          finish();
           return;
         }
         if (i >= items.length) {
-          dlBusy = false;
-          paintInTools();
-          status.textContent = "已下载 " + items.length + " 个";
+          finish();
+          status.textContent = floatPrefs.dlPrompt
+            ? "已接收 " + items.length + " 个"
+            : "已接收 " + items.length + " 个，点保存";
           return;
         }
         var it = items[i++];
+        dlCurrentId = it.id;
+        paintInTools();
         setNote(cardOf(it.id), "下载中");
         pullFile(it, function (done, total) {
           setNote(cardOf(it.id), "下载 " + fmtSize(done) + " / " + fmtSize(total));
-        }).then(function (blob) {
-          return saveBlob(blob, it.name).then(function () {
-            setNote(cardOf(it.id), "已下载");
-            setTimeout(next, 350);
-          });
+        }, signal).then(function (blob) {
+          if (signal.aborted) return;
+          var card = cardOf(it.id);
+          if (card) card._blob = blob;
+          if (floatPrefs.dlPrompt) {
+            anchorDownload(blob, it.name);
+            setNote(card, "已交给浏览器保存");
+          } else {
+            setNote(card, "已接收，点保存");
+          }
+          setTimeout(next, 200);
         }).catch(function (err) {
+          if (isAbort(err) || signal.aborted) {
+            setNote(cardOf(it.id), "已停止");
+            status.textContent = "已停止";
+            finish();
+            return;
+          }
           setNote(cardOf(it.id), (err && err.message) || "下载失败");
-          dlBusy = false;
-          paintInTools();
           status.textContent = (err && err.message) || "下载失败";
+          finish();
         });
       }
       next();
@@ -1314,7 +1375,17 @@
       btn.type = "button";
       btn.className = "ghost";
       btn.textContent = "下载";
+      box._btn = btn;
       btn.addEventListener("click", function () {
+        if (dlBusy && dlCurrentId === item.id) {
+          stopIncoming();
+          return;
+        }
+        if (box._blob) {
+          anchorDownload(box._blob, item.name);
+          setNote(box, "已保存");
+          return;
+        }
         downloadItems([item]);
       });
       box.appendChild(pick);
@@ -1360,6 +1431,7 @@
     }
     if (dlSelected) dlSelected.addEventListener("click", function () { downloadItems(selectedFileItems()); });
     if (dlAll) dlAll.addEventListener("click", function () { downloadItems(allFileItems()); });
+    if (stopInBtn) stopInBtn.addEventListener("click", stopIncoming);
     if (clearInBtn) clearInBtn.addEventListener("click", function () {
       if (!alive || dlBusy) return;
       fetch("/api/out/clear?" + qAuth(), { method: "POST", headers: authHeaders() }).then(function (r) {
@@ -1934,8 +2006,10 @@
     var settings = document.getElementById("settings");
     var optFloat = document.getElementById("optFloat");
     var optFloatSend = document.getElementById("optFloatSend");
+    var optDlPrompt = document.getElementById("optDlPrompt");
     if (optFloat) optFloat.checked = floatPrefs.show !== false;
     if (optFloatSend) optFloatSend.checked = !!floatPrefs.send;
+    if (optDlPrompt) optDlPrompt.checked = !!floatPrefs.dlPrompt;
     function openSettings() { if (settings) settings.hidden = false; }
     function closeSettings() { if (settings) settings.hidden = true; }
     var openBtn = document.getElementById("openSettings");
@@ -1959,6 +2033,12 @@
         floatPrefs.send = !!optFloatSend.checked;
         saveFloatPrefs();
         paintFloat();
+      });
+    }
+    if (optDlPrompt) {
+      optDlPrompt.addEventListener("change", function () {
+        floatPrefs.dlPrompt = !!optDlPrompt.checked;
+        saveFloatPrefs();
       });
     }
     if (floatDot && floatMain) {

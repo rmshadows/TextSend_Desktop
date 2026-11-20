@@ -107,6 +107,63 @@ public final class WebBridge {
         }
     }
 
+    /** 当前打开着页面的地址，顺序与 {@link #dropListener} 的下标一致。 */
+    public static List<String> listenerHosts() {
+        synchronized (LOCK) {
+            List<String> out = new ArrayList<>();
+            for (SseClient c : clients) {
+                out.add(remoteHost(c.ex));
+            }
+            return out;
+        }
+    }
+
+    /** 断开黑名单里的网页长连接。 */
+    public static void dropBlacklisted() {
+        List<SseClient> gone = new ArrayList<>();
+        synchronized (LOCK) {
+            for (SseClient s : clients) {
+                if (UserConfig.isWebBlacklisted(remoteHost(s.ex))) {
+                    gone.add(s);
+                }
+            }
+        }
+        for (SseClient s : gone) {
+            drop(s);
+        }
+    }
+
+    /** 断开一条网页长连接。下标对不上时按地址断开第一条。 */
+    public static void dropListener(int index, String host) {
+        SseClient c = null;
+        synchronized (LOCK) {
+            if (index >= 0 && index < clients.size() && host.equals(remoteHost(clients.get(index).ex))) {
+                c = clients.get(index);
+            } else if (host != null) {
+                for (SseClient s : clients) {
+                    if (host.equals(remoteHost(s.ex))) {
+                        c = s;
+                        break;
+                    }
+                }
+            }
+        }
+        if (c != null) {
+            drop(c);
+        }
+    }
+
+    private static String remoteHost(HttpExchange ex) {
+        try {
+            InetSocketAddress isa = ex.getRemoteAddress();
+            if (isa != null && isa.getAddress() != null) {
+                return isa.getAddress().getHostAddress();
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return "未知";
+    }
+
     /** 换网卡只改 host。会话过期或桥没开时返回 null。 */
     public static String pageUrl(String host) {
         synchronized (LOCK) {
@@ -423,6 +480,10 @@ public final class WebBridge {
 
     private static void handle(HttpExchange ex) {
         try {
+            if (UserConfig.isWebBlacklisted(remoteHost(ex))) {
+                text(ex, 403, "blocked");
+                return;
+            }
             String path = ex.getRequestURI().getPath();
             if (path == null || path.isEmpty()) {
                 path = "/";
@@ -1017,6 +1078,7 @@ public final class WebBridge {
                 clients.add(client);
                 backlog = new ArrayList<>(outbound);
             }
+            TextSendMain.onWebListenersChanged();
             for (byte[] ev : backlog) {
                 if (!client.write(ev)) {
                     return;
@@ -1082,10 +1144,14 @@ public final class WebBridge {
     }
 
     private static void drop(SseClient c) {
+        boolean removed;
         synchronized (LOCK) {
-            clients.remove(c);
+            removed = clients.remove(c);
         }
         c.close();
+        if (removed) {
+            TextSendMain.onWebListenersChanged();
+        }
     }
 
     private static byte[] sse(String event, String data) {

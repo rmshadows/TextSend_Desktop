@@ -52,12 +52,18 @@ public final class UserConfig {
     private static int maxClients = 7;
     /** 弹出窗口失焦即关（主窗口不关）。默认开。 */
     private static boolean popupsCloseOnFocusLost = true;
+    /** 开：App 服务和网页桥同时只留一个。默认关。 */
+    private static boolean webAppExclusive = false;
+    /** app、web、all。默认 all：App 和网页都发。 */
+    private static String sendTarget = "all";
     /** 同一 IP 每分钟最多几条授权请求（超出静默拒绝） */
     private static int authRatePerMin = 3;
     /** 拒绝后该 IP 冷却秒数（冷却期内静默拒绝）。默认 10。 */
     private static int authCooldownSec = 10;
-    /** 授权黑名单 IP（持久化） */
+    /** App 授权黑名单 IP（持久化）。不管兼容模式。 */
     private static final LinkedHashSet<String> authBlacklist = new LinkedHashSet<>();
+    /** 兼容模式黑名单 IP（持久化）。不管 App。 */
+    private static final LinkedHashSet<String> webBlacklist = new LinkedHashSet<>();
     private static String clientHost = "";
     private static int clientPort = 54300;
     private static String clientPin = "";
@@ -149,10 +155,19 @@ public final class UserConfig {
             // 新键默认开。旧键 qrCloseOnFocusLost 每次保存都会写成 false，不沿用。
             String popupsClose = p.getProperty("popupsCloseOnFocusLost");
             popupsCloseOnFocusLost = popupsClose == null || Boolean.parseBoolean(popupsClose);
+            webAppExclusive = Boolean.parseBoolean(p.getProperty("webAppExclusive", "false"));
+            String target = p.getProperty("sendTarget", "all");
+            if ("web".equals(target) || "app".equals(target) || "all".equals(target)) {
+                sendTarget = target;
+            } else {
+                sendTarget = "all";
+            }
             authRatePerMin = parseBoundedInt(p.getProperty("authRatePerMin", "3"), 3, 1, 60);
             authCooldownSec = parseBoundedInt(p.getProperty("authCooldownSec", "10"), 10, 0, 86400);
             authBlacklist.clear();
             authBlacklist.addAll(parseBlacklist(p.getProperty("authBlacklist", "")));
+            webBlacklist.clear();
+            webBlacklist.addAll(parseBlacklist(p.getProperty("webBlacklist", "")));
             clientHost = p.getProperty("clientHost", "").trim();
             clientPort = parsePort(54300, p.getProperty("clientPort", "54300"));
             clientPin = p.getProperty("clientPin", "").trim();
@@ -189,9 +204,12 @@ public final class UserConfig {
             p.setProperty("lanDiscoverPortFollowListen", Boolean.toString(lanDiscoverPortFollowListen));
             p.setProperty("maxClients", Integer.toString(maxClients));
             p.setProperty("popupsCloseOnFocusLost", Boolean.toString(popupsCloseOnFocusLost));
+            p.setProperty("webAppExclusive", Boolean.toString(webAppExclusive));
+            p.setProperty("sendTarget", sendTarget);
             p.setProperty("authRatePerMin", Integer.toString(authRatePerMin));
             p.setProperty("authCooldownSec", Integer.toString(authCooldownSec));
             p.setProperty("authBlacklist", String.join(",", authBlacklist));
+            p.setProperty("webBlacklist", String.join(",", webBlacklist));
             p.setProperty("clientHost", clientHost == null ? "" : clientHost);
             p.setProperty("clientPort", Integer.toString(clientPort));
             p.setProperty("clientPin", clientPin == null ? "" : clientPin);
@@ -254,9 +272,12 @@ public final class UserConfig {
         lanDiscoverPortFollowListen = true;
         maxClients = 7;
         popupsCloseOnFocusLost = true;
+        webAppExclusive = false;
+        sendTarget = "all";
         authRatePerMin = 3;
         authCooldownSec = 10;
         authBlacklist.clear();
+        webBlacklist.clear();
         clientHost = "";
         clientPort = 54300;
         clientPin = "";
@@ -485,6 +506,35 @@ public final class UserConfig {
         save();
     }
 
+    public static boolean isWebAppExclusive() {
+        return webAppExclusive;
+    }
+
+    public static void setWebAppExclusive(boolean v) {
+        webAppExclusive = v;
+        save();
+    }
+
+    /** app、web 或 all。 */
+    public static String getSendTarget() {
+        return sendTarget;
+    }
+
+    public static int getSendTargetIndex() {
+        if ("web".equals(sendTarget)) {
+            return 1;
+        }
+        if ("all".equals(sendTarget)) {
+            return 2;
+        }
+        return 0;
+    }
+
+    public static void setSendTargetIndex(int index) {
+        sendTarget = index == 1 ? "web" : (index == 2 ? "all" : "app");
+        save();
+    }
+
     public static int getAuthRatePerMin() {
         return authRatePerMin >= 1 && authRatePerMin <= 60 ? authRatePerMin : 3;
     }
@@ -554,6 +604,34 @@ public final class UserConfig {
         }
         authBlacklist.clear();
         authBlacklist.addAll(next);
+        save();
+    }
+
+    public static List<String> getWebBlacklist() {
+        return Collections.unmodifiableList(new ArrayList<>(webBlacklist));
+    }
+
+    public static boolean isWebBlacklisted(String host) {
+        String h = normalizeHost(host);
+        return !h.isEmpty() && webBlacklist.contains(h);
+    }
+
+    public static void addWebBlacklist(String host) {
+        String h = normalizeHost(host);
+        if (h.isEmpty() || !webBlacklist.add(h)) {
+            return;
+        }
+        save();
+    }
+
+    /** 用多行/逗号文本整体替换兼容模式黑名单。 */
+    public static void setWebBlacklistText(String text) {
+        LinkedHashSet<String> next = new LinkedHashSet<>(parseBlacklist(text == null ? "" : text));
+        if (next.equals(webBlacklist)) {
+            return;
+        }
+        webBlacklist.clear();
+        webBlacklist.addAll(next);
         save();
     }
 

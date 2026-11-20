@@ -218,6 +218,14 @@ public class TextSendMain {
     private static JButton buttonQr;
     private static JButton buttonWeb;
     private static JDialog webDialog;
+    private static JDialog helpDialog;
+    private static JDialog settingsDialog;
+    /** 设置失焦关闭时正在问是否保存，避免确认框再把设置关掉。 */
+    private static boolean settingsPrompt;
+    private static boolean settingsHandled;
+    private static java.util.function.BooleanSupplier settingsDirty;
+    private static java.util.function.BooleanSupplier settingsApply;
+    private static Runnable settingsAfterClose;
     /** 兼容模式窗口当前在看哪一档。只有 B 真的在跑；切到 A/C 不关 B。 */
     private static char webWayShown = 'B';
     private static JButton webWayB;
@@ -265,6 +273,7 @@ public class TextSendMain {
     private static JCheckBox checkFollowLinks;
     private static JCheckBox checkAutoStart;
     private static JCheckBox checkCustomPin;
+    private static JComboBox<String> comboSendTarget;
     private static JTextField fieldCustomPin;
     private static JCheckBox checkRememberClient;
     private static JButton buttonSettings;
@@ -282,16 +291,24 @@ public class TextSendMain {
     /** 关掉列表后，紧接着的那下字母不要进输入框。 */
     private static char sessionSwallowTyped;
 
-    /** 「在线」列表里的一台。快捷键作用在蓝框标出的那台。 */
+    /** 「在线」列表里的一台。快捷键作用在蓝框标出的那台。webWay 为 0 表示 App。 */
     private static final class SessionTarget {
         final boolean pending;
         final String host;
         final JPanel row;
+        final char webWay;
+        final int webIndex;
 
         SessionTarget(boolean pending, String host, JPanel row) {
+            this(pending, host, row, (char) 0, -1);
+        }
+
+        SessionTarget(boolean pending, String host, JPanel row, char webWay, int webIndex) {
             this.pending = pending;
             this.host = host;
             this.row = row;
+            this.webWay = webWay;
+            this.webIndex = webIndex;
         }
     }
     private static String lanPeerSig = "";
@@ -1202,7 +1219,7 @@ public class TextSendMain {
                 JPanel pinRow = new JPanel(new BorderLayout(UserConfig.s(8), 0));
                 pinRow.setOpaque(false);
                 pinRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-                pinRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(34)));
+                pinRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(28)));
                 JPanel pinLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
                 pinLeft.setOpaque(false);
                 checkCustomPin = new JCheckBox("固定 PIN");
@@ -1255,10 +1272,40 @@ public class TextSendMain {
                 });
                 pinLeft.add(checkCustomPin);
                 pinLeft.add(fieldCustomPin);
+                comboSendTarget = new JComboBox<>(new String[]{"只发 App", "只发兼容", "发给所有"});
+                comboSendTarget.setSelectedIndex(UserConfig.getSendTargetIndex());
+                comboSendTarget.setFont(comboSendTarget.getFont().deriveFont((float) UserConfig.s(12)));
+                comboSendTarget.setToolTipText("<html>默认发给所有：App 和网页都收到<br>"
+                        + "只发 App：有客户端走 App，没有就走网页<br>只发兼容：只给网页<br>"
+                        + "状态栏能看到兼容端口和页面数。App 服务没开时一律发网页。</html>");
+                comboSendTarget.addActionListener(e -> {
+                    if (comboSendTarget != null) {
+                        UserConfig.setSendTargetIndex(comboSendTarget.getSelectedIndex());
+                    }
+                });
+                JLabel sendTo = new JLabel("发到");
+                sendTo.setForeground(TEXT);
+                sendTo.setFont(sendTo.getFont().deriveFont((float) UserConfig.s(13)));
+                pinLeft.add(sendTo);
+                comboSendTarget.setPrototypeDisplayValue("发给所有");
+                Dimension sendBox = new Dimension(UserConfig.s(156), UserConfig.s(28));
+                comboSendTarget.setPreferredSize(sendBox);
+                comboSendTarget.setMinimumSize(sendBox);
+                comboSendTarget.setMaximumSize(sendBox);
+                JPanel sendHold = new JPanel(new BorderLayout());
+                sendHold.setOpaque(false);
+                sendHold.setPreferredSize(sendBox);
+                sendHold.setMinimumSize(sendBox);
+                sendHold.setMaximumSize(sendBox);
+                sendHold.add(comboSendTarget, BorderLayout.CENTER);
+                pinLeft.add(sendHold);
                 pinRow.add(pinLeft, BorderLayout.CENTER);
                 fixToolbarButton(buttonClients, 148);
                 updateClientsButton();
-                pinRow.add(buttonClients, BorderLayout.EAST);
+                JPanel clientsHold = new JPanel(new GridBagLayout());
+                clientsHold.setOpaque(false);
+                clientsHold.add(buttonClients);
+                pinRow.add(clientsHold, BorderLayout.EAST);
                 body.add(pinRow);
                 lanPeerBox = null;
                 authPendingBox = new JPanel();
@@ -1375,8 +1422,14 @@ public class TextSendMain {
             installFileDrop(areaMessage);
             installSmartPaste(areaMessage);
             installSmartPaste(miniTextArea);
+            fileTable.setDropMode(DropMode.ON);
             installFileDrop(fileTable);
+            installFileDrop(fileTable.getTableHeader());
             installFileDrop(scrollFiles);
+            installFileDrop(scrollFiles.getViewport());
+            installFileDrop(filePanel);
+            installFileDrop(labelFileQueue);
+            installFileDrop(body);
             installFileDrop(root);
             applyFileListLayout();
             refreshFileQueueLabel();
@@ -1729,6 +1782,7 @@ public class TextSendMain {
         fieldPort.setEnabled(isServerMode && !isServerRunning());
         comboIps.setEnabled(isServerMode);
         toggleMini.setSelected(miniMode);
+        updateClientsButton();
     }
 
     private static void syncPortFromField() {
@@ -1753,6 +1807,9 @@ public class TextSendMain {
     }
 
     private static void startServer(boolean showQrImg) {
+        if (UserConfig.isWebAppExclusive()) {
+            stopOtherWebBridge((char) 0);
+        }
         pairingMaterial = PairingMaterial.forSession(
                 UserConfig.isCustomPinEnabled(), UserConfig.getCustomPin());
         connectedClients = 0;
@@ -2001,32 +2058,30 @@ public class TextSendMain {
         new Thread(() -> {
             try {
                 if (isServerMode) {
-                    int alive = TsServer.aliveCountCurrent();
-                    if (alive > 0) {
+                    SendRoute route = routeSend();
+                    if (route.block != null) {
+                        onSendFinished(false, text, route.block);
+                        return;
+                    }
+                    int delivered = 0;
+                    String fail = null;
+                    if (route.app) {
                         int n = TsServer.sendToAllCurrent(text);
                         if (n > 0) {
-                            onSendFinished(true, text, null);
-                            return;
+                            delivered += n;
+                        } else if (!route.web) {
+                            fail = n < 0 ? "服务未运行" : "没有已连接的客户端";
                         }
                     }
-                    int delivered = pushTextToWebBridge(text);
-                    if (delivered > 0) {
-                        onSendFinished(true, text, null);
-                        return;
+                    if (route.web) {
+                        int n = pushTextToWebBridge(text);
+                        if (n > 0) {
+                            delivered++;
+                        } else if (delivered == 0) {
+                            fail = n < 0 ? "文字超过 64KB" : (webBridgeAnyRunning() ? "兼容模式会话已过期" : "兼容模式未开");
+                        }
                     }
-                    if (delivered < 0) {
-                        onSendFinished(false, text, "文字超过 64KB");
-                        return;
-                    }
-                    if (webBridgeAnyRunning()) {
-                        onSendFinished(false, text, "兼容模式会话已过期");
-                        return;
-                    }
-                    if (alive < 0 || !isServerRunning()) {
-                        onSendFinished(false, text, "服务未运行");
-                    } else {
-                        onSendFinished(false, text, "没有已连接的客户端");
-                    }
+                    onSendFinished(delivered > 0, text, delivered > 0 ? null : fail);
                     return;
                 } else {
                     TsPeer peer = clientPeer;
@@ -2140,6 +2195,56 @@ public class TextSendMain {
             return WebBridgeA.pushFile(path, tree, rel, cancelled, progress);
         }
         return 0;
+    }
+
+    /** 这次发送走 App、网页，或两边都走。block 非空就不要发。 */
+    private static final class SendRoute {
+        final boolean app;
+        final boolean web;
+        final String block;
+
+        SendRoute(boolean app, boolean web, String block) {
+            this.app = app;
+            this.web = web;
+            this.block = block;
+        }
+    }
+
+    private static SendRoute routeSend() {
+        if (!isServerMode) {
+            return new SendRoute(false, false, null);
+        }
+        boolean appUp = isServerRunning();
+        int alive = appUp ? TsServer.aliveCountCurrent() : -1;
+        boolean appClients = alive > 0;
+        boolean web = webBridgeReady();
+        boolean webProc = webBridgeAnyRunning();
+        if (!appUp) {
+            if (web) {
+                return new SendRoute(false, true, null);
+            }
+            return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "服务未运行");
+        }
+        String target = UserConfig.getSendTarget();
+        if ("web".equals(target)) {
+            if (web) {
+                return new SendRoute(false, true, null);
+            }
+            return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "兼容模式未开");
+        }
+        if ("all".equals(target)) {
+            if (!appClients && !web) {
+                return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "没有已连接的客户端");
+            }
+            return new SendRoute(appClients, web, null);
+        }
+        if (appClients) {
+            return new SendRoute(true, false, null);
+        }
+        if (web) {
+            return new SendRoute(false, true, null);
+        }
+        return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "没有已连接的客户端");
     }
 
     private static String webBridgeStatusBrief() {
@@ -2275,11 +2380,15 @@ public class TextSendMain {
         private final Color rowLine = new Color(0xD0D0D0);
 
         AuthBlacklistEditor(java.util.Collection<String> initial) {
+            this(initial, 5);
+        }
+
+        AuthBlacklistEditor(java.util.Collection<String> initial, int visibleRows) {
             root.setLayout(new BorderLayout(0, UserConfig.s(6)));
             root.setOpaque(false);
             root.setAlignmentX(Component.LEFT_ALIGNMENT);
-            int listH = rowH * 5 + UserConfig.s(2);
-            Dimension listSize = new Dimension(UserConfig.s(380), listH);
+            int listH = rowH * Math.max(2, visibleRows) + UserConfig.s(2);
+            Dimension listSize = new Dimension(UserConfig.s(240), listH);
 
             rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
             rows.setOpaque(true);
@@ -2298,10 +2407,11 @@ public class TextSendMain {
             scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
             scroll.getVerticalScrollBar().setUnitIncrement(rowH);
             scroll.setPreferredSize(listSize);
-            scroll.setMinimumSize(listSize);
+            scroll.setMinimumSize(new Dimension(UserConfig.s(120), listH));
             scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, listH));
 
-            field.setPreferredSize(new Dimension(UserConfig.s(380), rowH));
+            field.setPreferredSize(new Dimension(UserConfig.s(240), rowH));
+            field.setMinimumSize(new Dimension(UserConfig.s(120), rowH));
             field.setMaximumSize(new Dimension(Integer.MAX_VALUE, rowH));
             field.setBackground(Color.WHITE);
             field.setBorder(BorderFactory.createCompoundBorder(
@@ -2334,8 +2444,10 @@ public class TextSendMain {
 
             root.add(scroll, BorderLayout.CENTER);
             root.add(south, BorderLayout.SOUTH);
-            root.setPreferredSize(new Dimension(UserConfig.s(380), listH + rowH + UserConfig.s(28)));
-            root.setMaximumSize(new Dimension(Integer.MAX_VALUE, listH + rowH + UserConfig.s(36)));
+            int blockH = listH + rowH + UserConfig.s(28);
+            root.setPreferredSize(new Dimension(UserConfig.s(240), blockH));
+            root.setMinimumSize(new Dimension(UserConfig.s(120), blockH));
+            root.setMaximumSize(new Dimension(Integer.MAX_VALUE, blockH + UserConfig.s(8)));
             rebuild();
         }
 
@@ -2348,6 +2460,11 @@ public class TextSendMain {
 
         String text() {
             return String.join("\n", items);
+        }
+
+        /** 输入框里还没回车的内容。用来判断设置有没有改动。 */
+        String pending() {
+            return field.getText() == null ? "" : field.getText();
         }
 
         void commitField() {
@@ -2490,7 +2607,7 @@ public class TextSendMain {
     }
 
     private static void showSettings() {
-        JPanel panel = new JPanel();
+        StretchWidthPanel panel = new StretchWidthPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(new EmptyBorder(UserConfig.s(10), UserConfig.s(12), UserConfig.s(10), UserConfig.s(12)));
 
@@ -2538,7 +2655,12 @@ public class TextSendMain {
         JCheckBox qrFocusClose = new JCheckBox("弹出窗口失焦即关");
         qrFocusClose.setAlignmentX(Component.LEFT_ALIGNMENT);
         qrFocusClose.setSelected(UserConfig.isPopupsCloseOnFocusLost());
-        qrFocusClose.setToolTipText("默认开。点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。Esc 仍可关。");
+        qrFocusClose.setToolTipText("默认开。点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。设置有改动时会先问是否保存。Esc 仍可关。");
+
+        JCheckBox exclusive = new JCheckBox("兼容模式与 App 互斥");
+        exclusive.setAlignmentX(Component.LEFT_ALIGNMENT);
+        exclusive.setSelected(UserConfig.isWebAppExclusive());
+        exclusive.setToolTipText("默认关，两个可以同时开。打开后，开网页会停 App 服务，开 App 服务会停网页。");
 
         JPanel rateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
         rateRow.setOpaque(false);
@@ -2558,16 +2680,51 @@ public class TextSendMain {
         sizeDigitField(fieldAuthCool, 5);
         coolRow.add(fieldAuthCool);
 
-        JLabel blTitle = new JLabel("授权黑名单");
+        JLabel blTitle = new JLabel("App 黑名单");
         blTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
-        AuthBlacklistEditor blacklistEditor = new AuthBlacklistEditor(UserConfig.getAuthBlacklist());
+        blTitle.setToolTipText("只拒绝这个地址的 App 授权和连接。兼容模式不受影响。");
+        AuthBlacklistEditor blacklistEditor = new AuthBlacklistEditor(UserConfig.getAuthBlacklist(), 3);
         blacklistEditor.root.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        JLabel hint = new JLabel("<html><body style='width:360px'>平时请扫码。打开探测后：客户端点设备会进「待授权」列表，"
-                + "点开后两边显示同一串核对码，对得上再允许。限流/冷却/黑名单防骚扰。默认「探测端口跟随连接端口」，"
-                + "两边都是主界面那个口（连接 TCP，探测 UDP）。防火墙若只放行 TCP，还要放行同号 UDP。</body></html>");
+        JLabel webBlTitle = new JLabel("兼容模式黑名单");
+        webBlTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+        webBlTitle.setToolTipText("只拒绝这个地址打开网页。App 不受影响。");
+        AuthBlacklistEditor webBlacklistEditor = new AuthBlacklistEditor(UserConfig.getWebBlacklist(), 3);
+        webBlacklistEditor.root.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JTextArea hint = new JTextArea("平时请扫码。打开探测后：客户端点设备会进「待授权」列表，"
+                + "点开后两边显示同一串核对码，对得上再允许。限流、冷却和两份黑名单防骚扰。"
+                + "App 黑名单只拦 App，兼容模式黑名单只拦网页。"
+                + "默认「探测端口跟随连接端口」，两边都是主界面那个口（连接 TCP，探测 UDP）。"
+                + "防火墙若只放行 TCP，还要放行同号 UDP。");
+        hint.setLineWrap(true);
+        hint.setWrapStyleWord(true);
+        hint.setEditable(false);
+        hint.setOpaque(false);
+        hint.setFocusable(false);
         hint.setForeground(MUTED);
+        hint.setFont(hint.getFont().deriveFont((float) UserConfig.s(12)));
         hint.setAlignmentX(Component.LEFT_ALIGNMENT);
+        hint.setBorder(null);
+        hint.setMinimumSize(new Dimension(UserConfig.s(120), UserConfig.s(48)));
+        panel.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                int w = panel.getWidth() - panel.getInsets().left - panel.getInsets().right;
+                if (w < 80) {
+                    return;
+                }
+                if (hint.isPreferredSizeSet() && hint.getPreferredSize().width == w) {
+                    return;
+                }
+                hint.setPreferredSize(null);
+                hint.setSize(w, Short.MAX_VALUE);
+                int h = Math.max(UserConfig.s(48), hint.getPreferredSize().height);
+                hint.setPreferredSize(new Dimension(w, h));
+                hint.setMaximumSize(new Dimension(Integer.MAX_VALUE, h));
+                panel.revalidate();
+            }
+        });
 
         Runnable syncDiscoPortUi = () -> {
             boolean on = discover.isSelected();
@@ -2596,6 +2753,8 @@ public class TextSendMain {
         panel.add(maxRow);
         panel.add(Box.createVerticalStrut(UserConfig.s(6)));
         panel.add(qrFocusClose);
+        panel.add(Box.createVerticalStrut(UserConfig.s(6)));
+        panel.add(exclusive);
         panel.add(Box.createVerticalStrut(UserConfig.s(10)));
         panel.add(rateRow);
         panel.add(Box.createVerticalStrut(UserConfig.s(4)));
@@ -2604,6 +2763,10 @@ public class TextSendMain {
         panel.add(blTitle);
         panel.add(Box.createVerticalStrut(UserConfig.s(4)));
         panel.add(blacklistEditor.root);
+        panel.add(Box.createVerticalStrut(UserConfig.s(8)));
+        panel.add(webBlTitle);
+        panel.add(Box.createVerticalStrut(UserConfig.s(4)));
+        panel.add(webBlacklistEditor.root);
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
         panel.add(hint);
         panel.add(Box.createVerticalStrut(UserConfig.s(10)));
@@ -2635,24 +2798,123 @@ public class TextSendMain {
             fieldDiscoPort.setEnabled(false);
             fieldMaxClients.setText("7");
             qrFocusClose.setSelected(true);
+            exclusive.setSelected(false);
             fieldAuthRate.setText("3");
             fieldAuthCool.setText("10");
             blacklistEditor.clear();
+            webBlacklistEditor.clear();
             restored[0] = true;
         });
         panel.add(resetDefaults);
 
-        int r = JOptionPane.showConfirmDialog(frame, panel, "设置 · TextSend",
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (restored[0]) {
-            finishRestoreUi(wasMini[0], oldScale[0]);
-        }
-        if (r != JOptionPane.OK_OPTION) {
-            if (restored[0]) {
-                flashStatus("已恢复默认设置");
+        JScrollPane settingsScroll = new JScrollPane(panel);
+        settingsScroll.setBorder(BorderFactory.createEmptyBorder());
+        settingsScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        settingsScroll.setPreferredSize(new Dimension(UserConfig.s(460), UserConfig.s(520)));
+        settingsScroll.getVerticalScrollBar().setUnitIncrement(UserConfig.s(16));
+        String opened = settingsSignature(discover, announce, pause, followPort, fieldDiscoPort,
+                fieldMaxClients, qrFocusClose, exclusive, fieldAuthRate, fieldAuthCool,
+                blacklistEditor, webBlacklistEditor);
+        settingsDirty = () -> !opened.equals(settingsSignature(discover, announce, pause, followPort,
+                fieldDiscoPort, fieldMaxClients, qrFocusClose, exclusive, fieldAuthRate, fieldAuthCool,
+                blacklistEditor, webBlacklistEditor));
+        final boolean[] closed = {false};
+        settingsAfterClose = () -> {
+            if (closed[0]) {
+                return;
             }
-            return;
+            closed[0] = true;
+            settingsDirty = null;
+            settingsApply = null;
+            settingsAfterClose = null;
+            if (restored[0]) {
+                finishRestoreUi(wasMini[0], oldScale[0]);
+            }
+        };
+        JOptionPane pane = new JOptionPane(settingsScroll, JOptionPane.PLAIN_MESSAGE,
+                JOptionPane.OK_CANCEL_OPTION);
+        if (settingsDialog != null) {
+            settingsDialog.dispose();
         }
+        settingsDialog = pane.createDialog(frame, "设置 · TextSend");
+        settingsDialog.setModalityType(Dialog.ModalityType.MODELESS);
+        settingsDialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+        settingsDialog.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                closeSettingsFromOutside();
+            }
+        });
+        settingsDialog.setResizable(true);
+        settingsDialog.setMinimumSize(new Dimension(UserConfig.s(380), UserConfig.s(360)));
+        settingsDialog.setSize(new Dimension(UserConfig.s(480), UserConfig.s(640)));
+        settingsDialog.setLocationRelativeTo(frame);
+        settingsHandled = false;
+        settingsApply = () -> saveSettingsFromDialog(discover, announce, pause, followPort, fieldDiscoPort,
+                fieldMaxClients, qrFocusClose, exclusive, fieldAuthRate, fieldAuthCool,
+                blacklistEditor, webBlacklistEditor, restored[0]);
+        pane.addPropertyChangeListener(JOptionPane.VALUE_PROPERTY, ev -> {
+            if (settingsPrompt || settingsHandled) {
+                return;
+            }
+            Object v = ev.getNewValue();
+            if (!(v instanceof Integer choice) || choice == JOptionPane.UNINITIALIZED_VALUE) {
+                return;
+            }
+            if (choice == JOptionPane.OK_OPTION) {
+                settingsHandled = true;
+                if (!settingsApply.getAsBoolean()) {
+                    settingsHandled = false;
+                    SwingUtilities.invokeLater(() -> {
+                        pane.setValue(JOptionPane.UNINITIALIZED_VALUE);
+                        if (settingsDialog != null) {
+                            settingsDialog.setVisible(true);
+                            settingsDialog.toFront();
+                        }
+                    });
+                    return;
+                }
+                if (settingsAfterClose != null) {
+                    settingsAfterClose.run();
+                }
+                return;
+            }
+            if (choice == JOptionPane.CANCEL_OPTION) {
+                settingsHandled = true;
+                if (settingsAfterClose != null) {
+                    settingsAfterClose.run();
+                }
+                return;
+            }
+            if (choice == JOptionPane.CLOSED_OPTION) {
+                SwingUtilities.invokeLater(TextSendMain::closeSettingsFromOutside);
+            }
+        });
+        settingsDialog.setVisible(true);
+        return;
+    }
+
+    private static String settingsSignature(JCheckBox discover, JCheckBox announce, JCheckBox pause,
+                                            JCheckBox followPort, JTextField fieldDiscoPort,
+                                            JTextField fieldMaxClients, JCheckBox qrFocusClose,
+                                            JCheckBox exclusive, JTextField fieldAuthRate,
+                                            JTextField fieldAuthCool, AuthBlacklistEditor appList,
+                                            AuthBlacklistEditor webList) {
+        return discover.isSelected() + "\n" + announce.isSelected() + "\n" + pause.isSelected() + "\n"
+                + followPort.isSelected() + "\n" + fieldDiscoPort.getText() + "\n"
+                + fieldMaxClients.getText() + "\n" + qrFocusClose.isSelected() + "\n"
+                + exclusive.isSelected() + "\n" + fieldAuthRate.getText() + "\n"
+                + fieldAuthCool.getText() + "\n" + appList.text() + "\n" + appList.pending() + "\n"
+                + webList.text() + "\n" + webList.pending();
+    }
+
+    /** 把设置窗口里的值写入配置。校验失败时返回 false，窗口留着。 */
+    private static boolean saveSettingsFromDialog(JCheckBox discover, JCheckBox announce, JCheckBox pause,
+                                                  JCheckBox followPort, JTextField fieldDiscoPort,
+                                                  JTextField fieldMaxClients, JCheckBox qrFocusClose,
+                                                  JCheckBox exclusive, JTextField fieldAuthRate,
+                                                  JTextField fieldAuthCool, AuthBlacklistEditor blacklistEditor,
+                                                  AuthBlacklistEditor webBlacklistEditor, boolean restored) {
         boolean follow = followPort.isSelected();
         UserConfig.setLanDiscoverPortFollowListen(follow);
         if (!follow) {
@@ -2661,11 +2923,11 @@ public class TextSendMain {
                 port = Integer.parseInt(fieldDiscoPort.getText().trim());
             } catch (Exception ex) {
                 flashStatus("探测端口须为 1–65535");
-                return;
+                return false;
             }
             if (!UserConfig.setLanDiscoverPort(port) && discover.isSelected()) {
                 flashStatus("探测端口须为 1–65535");
-                return;
+                return false;
             }
         }
         int maxN;
@@ -2673,37 +2935,47 @@ public class TextSendMain {
             maxN = Integer.parseInt(fieldMaxClients.getText().trim());
         } catch (Exception ex) {
             flashStatus("最大客户端数须为 1–64");
-            return;
+            return false;
         }
         if (!UserConfig.setMaxClients(maxN)) {
             flashStatus("最大客户端数须为 1–64");
-            return;
+            return false;
         }
         int rateN;
         try {
             rateN = Integer.parseInt(fieldAuthRate.getText().trim());
         } catch (Exception ex) {
             flashStatus("授权限流须为 1–60");
-            return;
+            return false;
         }
         if (!UserConfig.setAuthRatePerMin(rateN)) {
             flashStatus("授权限流须为 1–60");
-            return;
+            return false;
         }
         int coolN;
         try {
             coolN = Integer.parseInt(fieldAuthCool.getText().trim());
         } catch (Exception ex) {
             flashStatus("冷却秒数须为 0–86400");
-            return;
+            return false;
         }
         if (!UserConfig.setAuthCooldownSec(coolN)) {
             flashStatus("冷却秒数须为 0–86400");
-            return;
+            return false;
         }
         blacklistEditor.commitField();
         UserConfig.setAuthBlacklistText(blacklistEditor.text());
+        webBlacklistEditor.commitField();
+        UserConfig.setWebBlacklistText(webBlacklistEditor.text());
+        WebBridge.dropBlacklisted();
+        WebBridgeA.dropBlacklisted();
         UserConfig.setPopupsCloseOnFocusLost(qrFocusClose.isSelected());
+        boolean turnExclusive = exclusive.isSelected();
+        UserConfig.setWebAppExclusive(turnExclusive);
+        if (turnExclusive && isServerRunning() && webBridgeAnyRunning()) {
+            stopOtherWebBridge((char) 0);
+            flashStatus("已互斥：关掉了兼容模式");
+        }
         UserConfig.setLanDiscoverAnnounce(announce.isSelected());
         UserConfig.setLanDiscoverPause(pause.isSelected());
         UserConfig.setLanDiscover(discover.isSelected());
@@ -2711,7 +2983,8 @@ public class TextSendMain {
         refreshLanPeers();
         refreshAuthPending();
         applyActionTooltips();
-        flashStatus(restored[0] ? "已恢复默认设置" : "设置已保存");
+        flashStatus(restored ? "已恢复默认设置" : "设置已保存");
+        return true;
     }
 
     /** 恢复默认已经写盘。缩放或小窗要等设置框关掉再重建窗口。 */
@@ -3082,6 +3355,7 @@ public class TextSendMain {
     private static void refreshConnectedClients() {
         JPanel box = connectedBox;
         if (box == null) {
+            updateClientsButton();
             return;
         }
         hideInlineSession(box);
@@ -3108,29 +3382,35 @@ public class TextSendMain {
             return;
         }
         buttonClients.setVisible(true);
-        int pending = authPendingByHost.size();
+        int pending = isServerRunning() ? authPendingByHost.size() : 0;
         int alive = isServerRunning() ? TsServer.listAliveClientsCurrent().size() : 0;
-        if (!isServerRunning()) {
+        int online = alive + webListenerTotal();
+        if (online == 0 && pending == 0 && !isServerRunning() && !webBridgeAnyRunning()) {
             buttonClients.setText("在线 —");
         } else if (pending > 0) {
-            buttonClients.setText("待授权 " + pending + " · 在线 " + alive);
+            buttonClients.setText("待授权 " + pending + " · 在线 " + online);
         } else {
-            buttonClients.setText("在线 " + alive);
+            buttonClients.setText("在线 " + online);
         }
     }
 
-    /** 工具栏「在线」：待授权（接受/拒绝/拉黑）+ 已连接（踢出/拉黑）。没人连上也在。 */
+    private static int webListenerTotal() {
+        return WebBridge.listenerHosts().size() + WebBridgeA.listenerHosts().size();
+    }
+
+    /** 工具栏「在线」：待授权、App 客户端和网页会话在同一张列表里。服务端没开也能看网页。 */
     private static void showSessionPopup() {
         if (buttonClients == null || frame == null || !buttonClients.isShowing()) {
             return;
         }
-        if (!isServerRunning()) {
-            flashStatus("请先启动服务端");
-            return;
-        }
-        java.util.List<PendingAuth> pending = new java.util.ArrayList<>(authPendingByHost.values());
+        java.util.List<PendingAuth> pending = isServerRunning()
+                ? new java.util.ArrayList<>(authPendingByHost.values())
+                : new java.util.ArrayList<>();
         pending.sort((a, b) -> Long.compare(a.at, b.at));
-        List<TsServer.AliveClient> clients = TsServer.listAliveClientsCurrent();
+        List<TsServer.AliveClient> clients = isServerRunning()
+                ? TsServer.listAliveClientsCurrent() : List.of();
+        List<String> webB = WebBridge.listenerHosts();
+        List<String> webA = WebBridgeA.listenerHosts();
 
         hideSessionPopup();
         sessionCursor = 0;
@@ -3170,12 +3450,14 @@ public class TextSendMain {
         }
 
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
-        JLabel h2 = new JLabel("已连接  " + clients.size()
-                + (maxConnection > 1 ? " / " + maxConnection : ""));
+        int online = clients.size() + webA.size() + webB.size();
+        String cap = isServerRunning() && webA.isEmpty() && webB.isEmpty() && maxConnection > 1
+                ? " / " + maxConnection : "";
+        JLabel h2 = new JLabel("已连接  " + online + cap);
         h2.setFont(h2.getFont().deriveFont(Font.BOLD, (float) UserConfig.s(13)));
         h2.setAlignmentX(Component.LEFT_ALIGNMENT);
         panel.add(h2);
-        if (clients.isEmpty()) {
+        if (online == 0) {
             JLabel empty = new JLabel("还没有客户端");
             empty.setForeground(MUTED);
             empty.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -3209,6 +3491,8 @@ public class TextSendMain {
             sessionTargets.add(new SessionTarget(false, host, row));
             panel.add(row);
         }
+        addWebSessionRows(panel, webB, 'B');
+        addWebSessionRows(panel, webA, 'A');
 
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
         JLabel keys = new JLabel("Alt+Y 允许 · Alt+N 拒绝 · Alt+B 拉黑 · Alt+K 踢下线 · ↑↓ 换一台");
@@ -3343,7 +3627,9 @@ public class TextSendMain {
             }
             case "block" -> {
                 hideSessionPopup();
-                if (pending) {
+                if (t.webWay != 0) {
+                    blockWeb(host);
+                } else if (pending) {
                     decideAuth(host, false, true);
                 } else {
                     UserConfig.addAuthBlacklist(host);
@@ -3358,14 +3644,64 @@ public class TextSendMain {
                     return;
                 }
                 hideSessionPopup();
-                TsServer.kickHostCurrent(host);
-                flashStatus("已踢下线 " + host);
+                if (t.webWay == 'A') {
+                    WebBridgeA.dropListener(t.webIndex, host);
+                    flashStatus("已断开网页 " + host);
+                } else if (t.webWay == 'B') {
+                    WebBridge.dropListener(t.webIndex, host);
+                    flashStatus("已断开网页 " + host);
+                } else {
+                    TsServer.kickHostCurrent(host);
+                    flashStatus("已踢下线 " + host);
+                }
                 refreshConnectedClients();
             }
             default -> {
             }
         }
         updateClientsButton();
+    }
+
+    private static void addWebSessionRows(JPanel panel, List<String> hosts, char way) {
+        for (int i = 0; i < hosts.size(); i++) {
+            String host = hosts.get(i);
+            int index = i;
+            JPanel row = sessionRow("网页 " + way + "  ·  " + host,
+                    new String[]{"断开  Alt+K", "拉黑  Alt+B"},
+                    new String[]{
+                            "关掉这个网页的长连接（Alt+K）",
+                            "拉黑这个地址，并断开它打开的网页（Alt+B）"
+                    },
+                    new Runnable[]{
+                            () -> {
+                                if (way == 'A') {
+                                    WebBridgeA.dropListener(index, host);
+                                } else {
+                                    WebBridge.dropListener(index, host);
+                                }
+                                flashStatus("已断开网页 " + host);
+                                hideSessionPopup();
+                                refreshConnectedClients();
+                            },
+                            () -> blockWeb(host)
+                    });
+            sessionTargets.add(new SessionTarget(false, host, row, way, index));
+            panel.add(row);
+        }
+    }
+
+    /** 拉黑网页地址：只写入兼容模式黑名单，并断开这个地址上的网页。 */
+    private static void blockWeb(String host) {
+        if (host == null || host.isBlank() || "未知".equals(host)) {
+            flashStatus("这个网页没有地址，没法拉黑");
+            return;
+        }
+        UserConfig.addWebBlacklist(host);
+        WebBridge.dropBlacklisted();
+        WebBridgeA.dropBlacklisted();
+        flashStatus("已拉黑并断开网页 " + host);
+        hideSessionPopup();
+        refreshConnectedClients();
     }
 
     private static JPanel sessionRow(String label, String[] actions, String[] tips, Runnable[] runs) {
@@ -3650,6 +3986,20 @@ public class TextSendMain {
     /** 网页桥收到文件后在状态栏提一句。 */
     static void noteWeb(String s) {
         flashStatus(s);
+    }
+
+    /** 网页长连接增减。按钮上的在线人数把 App 和网页算在一起。 */
+    static void onWebListenersChanged() {
+        SwingUtilities.invokeLater(() -> {
+            updateClientsButton();
+            if (transferUi || labelStatus == null) {
+                return;
+            }
+            if (statusFlashTimer != null && statusFlashTimer.isRunning()) {
+                return;
+            }
+            labelStatus.setText(runningStatusText());
+        });
     }
 
     private static void flashStatus(String s) {
@@ -3955,6 +4305,9 @@ public class TextSendMain {
             return;
         }
         stopOtherWebBridge(webWayShown);
+        if (UserConfig.isWebAppExclusive() && isServerRunning()) {
+            stopServer();
+        }
         try {
             if (webWayShown == 'A') {
                 WebBridgeA.start(port);
@@ -4168,9 +4521,10 @@ public class TextSendMain {
                 · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
-                · 「兼容模式」：在监听那一行。窗口里有 B 加密、A 明文、C 证书（未做）。A/B/C 同时只开一档，共用网页端口（默认 54301）；开另一档会关掉当前档。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。点二维码复制链接，点链接用浏览器打开。有 v1 客户端时「发送」仍优先走原来的连接。没有客户端、网页开着时，文字和文件发给网页；网页可预览图片、下载选中或全部、清空。安卓和电脑客户端仍用「二维码」。
-                · 「在线」：待授权和已连接。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台。
-                · 「设置」：探测、限流、冷却、黑名单、人数上限。
+                · 「发到」：在固定 PIN 那一行，默认发给所有（App 和网页都收到）。只发 App：有客户端走 App，没有就走网页。只发兼容：只给网页。App 服务没开时一律发网页；网页也没开就没有发送口。状态栏显示兼容端口和页面数。设置里「兼容模式与 App 互斥」默认关。
+                · 「兼容模式」：在监听那一行。窗口里有 A 明文、B 加密、C 证书（未做），默认停在 B。A/B/C 同时只开一档，共用网页端口（默认 54301）。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。电脑发来的文件在网页里预览、下载或清空。点二维码复制链接，点链接用浏览器打开。
+                · 「在线」：待授权、App 客户端和网页会话在同一张列表。服务端没开也能看网页。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。网页可断开，也可拉黑。拉黑 App 只拒 App，拉黑网页只拒兼容模式。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线或断开网页，↑↓ 换一台。
+                · 「设置」：探测、限流、冷却、App 黑名单、兼容模式黑名单、人数上限。
                 · 「帮助」：本页。F1 同样。
                 · 「置顶小窗」：收成小窗；Esc 回到大窗。
 
@@ -4190,7 +4544,7 @@ public class TextSendMain {
                 · 可勾选「记住上次连接」：PIN 连成功后记住 IP、端口和 PIN（默认关，不记长密钥）。
                 · 「设置」里可开局域网探测（默认关）：客户端列出同一局域网开服的 TextSend。
                 · 点设备会向服务端请求临时授权；服务端出现「待授权」列表，两边显示同一串核对码，对得上再「允许 / 拒绝 / 拉黑」。打开列表时 Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线，↑↓ 换一台，作用在蓝框那台。单独按字母会进输入框，不会误同意。
-                · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 10 秒）、黑名单。
+                · 设置可调授权限流（默认每 IP 每分钟 3 次）、拒绝后冷却（默认 10 秒）。App 黑名单和兼容模式黑名单分开。
                 · 连接是 TCP，发现设备是 UDP（广播不能走 TCP）。默认「探测端口跟随连接端口」，两边同号。
                 · 防火墙如果只放了 TCP，手机仍能连上，但发往电脑的探测进不来。请再放行同号 UDP。「有连接时关闭探测」默认开。
                 · 服务端「已连接」列表可对某一客户端「踢下线」，无需重启服务。
@@ -4236,13 +4590,13 @@ public class TextSendMain {
                 —— 二维码 ——
                 · 左键启动会弹出二维码；有客户端连上后自动关闭。
                 · 点「二维码」手动打开则保持显示，连上也不关。Esc 关闭。
-                · 设置里「弹出窗口失焦即关」默认开：点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。
+                · 设置里「弹出窗口失焦即关」默认开：点到别处时，二维码、兼容模式、大图、帮助、设置这些窗口会关掉。主窗口不关。设置有改动时会先问是否保存。
                 · 高 UI 缩放下二维码默认完整显示；可拖动窗口边角放大，始终整张码可见可扫。
 
                 —— 配置文件 ——
                 · 优先：程序同一目录的 textsend.properties（jar / 绿色版）。
                 · 程序目录不能写时（系统安装包）：主目录下仅一份 .textsend.properties。
-                · 不建 ~/.config。保存项含 maxClients、authRatePerMin、authCooldownSec、authBlacklist、lanDiscover* 等。
+                · 不建 ~/.config。保存项含 maxClients、authRatePerMin、authCooldownSec、authBlacklist、webBlacklist、lanDiscover* 等。
                 · 「启动即开服」默认关；会记住上次选的监听 IP，换网后该 IP 不在网卡列表则自动重选。
                 """.formatted(VERSION);
         JTextArea area = new JTextArea(text);
@@ -4256,7 +4610,17 @@ public class TextSendMain {
         area.setBorder(new EmptyBorder(UserConfig.s(8), UserConfig.s(10), UserConfig.s(8), UserConfig.s(10)));
         JScrollPane sp = new JScrollPane(area);
         sp.setPreferredSize(new Dimension(UserConfig.s(520), UserConfig.s(420)));
-        JOptionPane.showMessageDialog(frame, sp, "帮助 · TextSend " + VERSION, JOptionPane.PLAIN_MESSAGE);
+        if (helpDialog != null && helpDialog.isShowing()) {
+            helpDialog.toFront();
+            return;
+        }
+        JOptionPane helpPane = new JOptionPane(sp, JOptionPane.PLAIN_MESSAGE);
+        helpDialog = helpPane.createDialog(frame, "帮助 · TextSend " + VERSION);
+        helpDialog.setModalityType(Dialog.ModalityType.MODELESS);
+        helpDialog.setResizable(true);
+        helpDialog.pack();
+        helpDialog.setLocationRelativeTo(frame);
+        helpDialog.setVisible(true);
     }
 
     private static void copyText(String text) {
@@ -4267,7 +4631,24 @@ public class TextSendMain {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    private static void reinstallFileDrops() {
+        if (fileTable != null) {
+            fileTable.setDropMode(DropMode.ON);
+            installFileDrop(fileTable);
+            if (fileTable.getTableHeader() != null) {
+                installFileDrop(fileTable.getTableHeader());
+            }
+        }
+        if (scrollFiles != null) {
+            installFileDrop(scrollFiles);
+            if (scrollFiles.getViewport() != null) {
+                installFileDrop(scrollFiles.getViewport());
+            }
+        }
+        installFileDrop(filePanel);
+        installFileDrop(labelFileQueue);
+    }
+
     private static void installFileDrop(JComponent c) {
         if (c == null) {
             return;
@@ -4279,9 +4660,17 @@ public class TextSendMain {
         c.setTransferHandler(new TransferHandler() {
             @Override
             public boolean canImport(TransferSupport support) {
-                return support.isDataFlavorSupported(DataFlavor.imageFlavor)
-                        || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
-                        || support.isDataFlavorSupported(DataFlavor.stringFlavor);
+                if (support.isDrop() && (support.getSourceDropActions() & COPY) != 0) {
+                    support.setDropAction(COPY);
+                }
+                if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) || hasUriFlavor(support)) {
+                    return true;
+                }
+                if (support.isDataFlavorSupported(DataFlavor.imageFlavor)
+                        && support.getComponent() instanceof JTextComponent) {
+                    return true;
+                }
+                return support.isDataFlavorSupported(DataFlavor.stringFlavor);
             }
 
             @Override
@@ -4296,10 +4685,9 @@ public class TextSendMain {
                             return true;
                         }
                     }
-                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
-                        List<File> files = (List<File>) support.getTransferable()
-                                .getTransferData(DataFlavor.javaFileListFlavor);
-                        enqueueFiles(new ArrayList<>(files));
+                    List<File> files = filesFromTransfer(support.getTransferable());
+                    if (!files.isEmpty()) {
+                        enqueueFiles(files);
                         return true;
                     }
                     if (support.isDataFlavorSupported(DataFlavor.stringFlavor)
@@ -4315,6 +4703,122 @@ public class TextSendMain {
                 return false;
             }
         });
+    }
+
+    private static boolean hasUriFlavor(TransferHandler.TransferSupport support) {
+        for (DataFlavor flavor : support.getDataFlavors()) {
+            if (isUriFlavor(flavor)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isUriFlavor(DataFlavor flavor) {
+        String sub = flavor.getSubType();
+        if (sub == null) {
+            return false;
+        }
+        sub = sub.toLowerCase(java.util.Locale.ROOT);
+        return sub.contains("uri-list") || sub.contains("gnome-copied-files") || sub.contains("x-moz-url");
+    }
+
+    /** Linux 文件管理器通常给 text/uri-list，不一定给 javaFileListFlavor。 */
+    private static List<File> filesFromTransfer(java.awt.datatransfer.Transferable t) {
+        try {
+            if (t.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                Object data = t.getTransferData(DataFlavor.javaFileListFlavor);
+                if (data instanceof List<?> list) {
+                    List<File> files = new ArrayList<>();
+                    for (Object o : list) {
+                        if (o instanceof File f) {
+                            files.add(f);
+                        }
+                    }
+                    if (!files.isEmpty()) {
+                        return files;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        List<File> fromText = List.of();
+        for (DataFlavor flavor : t.getTransferDataFlavors()) {
+            if (!isUriFlavor(flavor) && !flavor.isFlavorTextType()) {
+                continue;
+            }
+            try {
+                List<File> files = filesFromUriText(transferText(t.getTransferData(flavor)));
+                if (files.isEmpty()) {
+                    continue;
+                }
+                if (isUriFlavor(flavor)) {
+                    return files;
+                }
+                fromText = files;
+            } catch (Exception ignored) {
+            }
+        }
+        return fromText;
+    }
+
+    private static String transferText(Object data) throws IOException {
+        if (data instanceof String s) {
+            return s;
+        }
+        if (data instanceof java.io.Reader r) {
+            StringBuilder sb = new StringBuilder();
+            char[] buf = new char[2048];
+            int n;
+            while ((n = r.read(buf)) >= 0) {
+                sb.append(buf, 0, n);
+            }
+            r.close();
+            return sb.toString();
+        }
+        if (data instanceof java.io.InputStream in) {
+            byte[] b = in.readAllBytes();
+            in.close();
+            return new String(b, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        if (data instanceof byte[] b) {
+            return new String(b, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return "";
+    }
+
+    private static List<File> filesFromUriText(String text) {
+        List<File> out = new ArrayList<>();
+        if (text == null || text.isBlank()) {
+            return out;
+        }
+        for (String raw : text.split("\\r?\\n")) {
+            String line = raw.trim();
+            if (line.isEmpty() || line.startsWith("#") || "copy".equals(line) || "cut".equals(line)) {
+                continue;
+            }
+            if (line.regionMatches(true, 0, "file:", 0, 5)) {
+                File f = fileFromUri(line);
+                if (f != null) {
+                    out.add(f);
+                }
+            } else if (line.startsWith("/") && new File(line).exists()) {
+                out.add(new File(line));
+            }
+        }
+        return out;
+    }
+
+    private static File fileFromUri(String line) {
+        try {
+            URI uri = new URI(line.replace(" ", "%20"));
+            if (!"file".equalsIgnoreCase(uri.getScheme())) {
+                return null;
+            }
+            return new File(uri);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -4333,14 +4837,14 @@ public class TextSendMain {
             @Override
             public boolean canImport(TransferSupport support) {
                 if (support.isDataFlavorSupported(DataFlavor.imageFlavor)
-                        || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+                        || hasUriFlavor(support)) {
                     return true;
                 }
                 return textTh != null && textTh.canImport(support);
             }
 
             @Override
-            @SuppressWarnings("unchecked")
             public boolean importData(TransferSupport support) {
                 try {
                     if (support.isDataFlavorSupported(DataFlavor.imageFlavor)) {
@@ -4351,10 +4855,9 @@ public class TextSendMain {
                             return true;
                         }
                     }
-                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
-                        List<File> files = (List<File>) support.getTransferable()
-                                .getTransferData(DataFlavor.javaFileListFlavor);
-                        enqueueFiles(new ArrayList<>(files));
+                    List<File> files = filesFromTransfer(support.getTransferable());
+                    if (!files.isEmpty()) {
+                        enqueueFiles(files);
                         return true;
                     }
                 } catch (Exception e) {
@@ -4385,6 +4888,7 @@ public class TextSendMain {
             if (fileTable.getTableHeader() != null) {
                 fileTable.getTableHeader().updateUI();
             }
+            reinstallFileDrops();
             if (buttonBrowse != null) {
                 buttonBrowse.updateUI();
             }
@@ -4403,6 +4907,7 @@ public class TextSendMain {
         fileTable.getTableHeader().setReorderingAllowed(false);
         fileTable.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
         fileTable.setFillsViewportHeight(true);
+        fileTable.setDropMode(DropMode.ON);
         fileTable.setShowHorizontalLines(true);
         fileTable.setShowVerticalLines(false);
         fileTable.setBackground(Color.WHITE);
@@ -4499,7 +5004,7 @@ public class TextSendMain {
 
         labelFileQueue = new JLabel();
         labelFileQueue.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        labelFileQueue.setToolTipText("点击展开或收起待发列表");
+        labelFileQueue.setToolTipText("点击展开或收起。文件可以拖到这一行或下面的列表");
         labelFileQueue.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -4550,6 +5055,7 @@ public class TextSendMain {
         fileBtns.add(buttonInbox);
         fileBtns.add(buttonRemoveFiles);
         fileHead.add(fileBtns, BorderLayout.EAST);
+        installFileDrop(fileHead);
 
         filePanel = new JPanel(new BorderLayout(0, 4));
         filePanel.setOpaque(false);
@@ -5211,17 +5717,13 @@ public class TextSendMain {
         }
         int peers = 1;
         if (isServerMode) {
-            peers = TsServer.aliveCountCurrent();
-            boolean bridge = webBridgeReady();
-            if (peers < 0 && !bridge) {
-                flashStatus(webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行");
+            SendRoute route = routeSend();
+            if (route.block != null) {
+                flashStatus(route.block);
                 return;
             }
-            if (peers <= 0 && !bridge) {
-                flashStatus("没有已连接的客户端");
-                return;
-            }
-            if (peers > 1) {
+            peers = route.app ? Math.max(0, TsServer.aliveCountCurrent()) : 0;
+            if (route.app && peers > 1) {
                 StringBuilder sb = new StringBuilder();
                 sb.append("将发给 ").append(peers).append(" 台已连接设备。\n\n");
                 int show = Math.min(files.size(), 8);
@@ -5287,36 +5789,33 @@ public class TextSendMain {
                             of = so[1];
                         }
                         if (isServerMode) {
-                            int alive = TsServer.aliveCountCurrent();
-                            if (alive > 0) {
-                                int n = TsServer.sendFileToAllCurrent(path, cancelFileSend::get, tree, rel, seq, of);
-                                if (n < 0) {
-                                    err = "服务未运行";
-                                    break sendMore;
-                                }
-                                if (n == 0) {
-                                    err = "没有已连接的客户端";
-                                    break sendMore;
-                                }
-                            } else if (webBridgeReady()) {
-                                int n = pushFileToWebBridge(path, tree, rel, cancelFileSend::get, seq, of);
-                                if (n == 0) {
-                                    err = "兼容模式会话已过期";
-                                    break sendMore;
-                                }
-                                if (n == -1) {
-                                    err = "文件超过 20GB";
-                                    break sendMore;
-                                }
-                                if (n == -2) {
-                                    err = "网页收件已满，请在手机上清空";
-                                    break sendMore;
-                                }
-                            } else if (alive < 0 || !isServerRunning()) {
-                                err = webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行";
+                            SendRoute route = routeSend();
+                            if (route.block != null) {
+                                err = route.block;
                                 break sendMore;
-                            } else {
-                                err = "没有已连接的客户端";
+                            }
+                            int got = 0;
+                            if (route.app) {
+                                int n = TsServer.sendFileToAllCurrent(path, cancelFileSend::get, tree, rel, seq, of);
+                                if (n > 0) {
+                                    got += n;
+                                } else if (!route.web) {
+                                    err = n < 0 ? "服务未运行" : "没有已连接的客户端";
+                                    break sendMore;
+                                }
+                            }
+                            if (route.web) {
+                                int n = pushFileToWebBridge(path, tree, rel, cancelFileSend::get, seq, of);
+                                if (n > 0) {
+                                    got++;
+                                } else if (got == 0) {
+                                    err = n == -1 ? "文件超过 20GB"
+                                            : (n == -2 ? "网页收件已满，请在手机上清空" : "兼容模式会话已过期");
+                                    break sendMore;
+                                }
+                            }
+                            if (got == 0) {
+                                err = "没有发送口";
                                 break sendMore;
                             }
                         } else {
@@ -5398,11 +5897,14 @@ public class TextSendMain {
 
     private static boolean readyToSend() {
         if (isServerMode) {
-            if (!isServerRunning() && !webBridgeReady()) {
-                flashStatus(webBridgeAnyRunning() ? "兼容模式会话已过期" : "服务未运行");
+            SendRoute route = routeSend();
+            if (route.block != null || (!route.app && !route.web)) {
+                flashStatus(route.block == null ? "没有发送口" : route.block);
                 return false;
             }
-        } else if (!isClientConnected || clientPeer == null || !clientPeer.isAlive()) {
+            return true;
+        }
+        if (!isClientConnected || clientPeer == null || !clientPeer.isAlive()) {
             flashStatus("尚未握手或已断开");
             return false;
         }
@@ -5641,6 +6143,54 @@ public class TextSendMain {
         }, AWTEvent.WINDOW_EVENT_MASK);
     }
 
+    /** 点到设置窗口外面时：没改动就关；开了失焦即关且有改动，先问是否保存。 */
+    private static void closeSettingsFromOutside() {
+        JDialog d = settingsDialog;
+        if (d == null || settingsPrompt || settingsHandled) {
+            return;
+        }
+        boolean ask = UserConfig.isPopupsCloseOnFocusLost()
+                && settingsDirty != null && settingsDirty.getAsBoolean();
+        if (!ask) {
+            settingsHandled = true;
+            d.setVisible(false);
+            if (settingsAfterClose != null) {
+                settingsAfterClose.run();
+            }
+            return;
+        }
+        if (!d.isShowing()) {
+            d.setVisible(true);
+        }
+        settingsPrompt = true;
+        try {
+            int a = JOptionPane.showConfirmDialog(d, "设置有改动，是否保存？", "设置",
+                    JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (a == JOptionPane.YES_OPTION) {
+                if (settingsApply != null && settingsApply.getAsBoolean()) {
+                    settingsHandled = true;
+                    d.setVisible(false);
+                    if (settingsAfterClose != null) {
+                        settingsAfterClose.run();
+                    }
+                } else {
+                    d.toFront();
+                }
+            } else if (a == JOptionPane.NO_OPTION) {
+                settingsHandled = true;
+                d.setVisible(false);
+                if (settingsAfterClose != null) {
+                    settingsAfterClose.run();
+                }
+            } else {
+                d.toFront();
+                d.requestFocus();
+            }
+        } finally {
+            settingsPrompt = false;
+        }
+    }
+
     /** child 是否由 parent 拥有（设置里再弹出确认框时，不要把设置一起关掉）。 */
     private static boolean windowOwns(Window parent, Window child) {
         for (Window w = child; w != null; w = w.getOwner()) {
@@ -5653,6 +6203,14 @@ public class TextSendMain {
 
     private static void dismissPopup(Window w) {
         if (w == null || !w.isShowing() || w == frame) {
+            return;
+        }
+            if (w == settingsDialog) {
+            closeSettingsFromOutside();
+            return;
+        }
+        if (w == helpDialog) {
+            helpDialog.setVisible(false);
             return;
         }
         if (w == webDialog) {

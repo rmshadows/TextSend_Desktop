@@ -391,6 +391,7 @@
         <div class="tools in-tools">
           <button id="dlSelected" class="ghost" type="button">下载选中</button>
           <button id="dlAll" class="ghost" type="button">全部下载</button>
+          <button id="stopIn" class="stop" type="button" hidden>停止下载</button>
           <button id="clearIn" class="ghost" type="button">清空</button>
         </div>
         <p id="empty" class="empty">还没有</p>
@@ -405,6 +406,8 @@
       <p class="hint">按住圆点拖动，松手记住位置。</p>
       <label class="check"><input id="optFloatSend" type="checkbox"> 悬浮点带「发送」</label>
       <p class="hint">滑到下面时，用悬浮点发输入框里的文字。</p>
+      <label class="check"><input id="optDlPrompt" type="checkbox"> 接收完成后弹出下载框</label>
+      <p class="hint">电脑发来的文件收完后，交给浏览器保存。关掉则点「保存」再放进下载目录。</p>
       <p id="verLine" class="ver">电脑端 —</p>
       <button id="closeSettings" type="button">完成</button>
     </div>
