@@ -620,7 +620,7 @@ public final class WebBridge {
             return;
         }
         byte[] body = ("{\"v\":1,\"mode\":\"B\",\"encrypt\":true,\"pageVersion\":\"1\",\"app\":\""
-                + TextSendMain.VERSION + "\"}").getBytes(StandardCharsets.UTF_8);
+                + TextSendMain.VERSION + "\",\"host\":\"电脑\"}").getBytes(StandardCharsets.UTF_8);
         Headers h = ex.getResponseHeaders();
         h.set("Content-Type", "application/json; charset=utf-8");
         h.set("Cache-Control", "no-store");

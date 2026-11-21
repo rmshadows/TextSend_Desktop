@@ -5,6 +5,18 @@
 (function (root) {
   "use strict";
 
+  var hostWord = "电脑";
+  function applyHost(name) {
+    if (name) hostWord = String(name);
+    var sendTitle = document.getElementById("sendTitle");
+    if (sendTitle) sendTitle.textContent = "发给" + hostWord;
+    var inTitle = document.getElementById("inTitle");
+    if (inTitle) inTitle.textContent = hostWord + "发来的";
+    var hint = document.getElementById("dlHint");
+    if (hint) hint.textContent = hostWord + "发来的文件收完后，交给浏览器保存。关掉则点「保存」再放进下载目录。";
+  }
+
+
   var INFO = "textsend-webbridge-v1";
   var SBOX = [
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
@@ -499,7 +511,7 @@
   function showAppVersion(ver) {
     if (!ver) return;
     var line = document.getElementById("verLine");
-    if (line) line.textContent = "电脑端 " + ver;
+    if (line) line.textContent = hostWord + "端 " + ver;
     var mode = document.getElementById("modeLabel");
     if (!mode) return;
     var base = mode.textContent.indexOf("未加密") >= 0 ? "兼容 · 未加密"
@@ -568,6 +580,7 @@
   }
 
   function boot() {
+    applyHost();
     var caFold = document.getElementById("caFold");
     var caSteps = document.getElementById("caSteps");
     if (caFold && caSteps) {
@@ -618,7 +631,7 @@
     var modeA = modeHint === "A" || (!!token && !keyB64);
     if (modeA) {
       if (!sid || !token) {
-        status.textContent = "请用电脑上「A 明文」二维码打开，不要手打地址。";
+        status.textContent = "请用" + hostWord + "上「A 明文」二维码打开，不要手打地址。";
         setLink("dead", "未连接");
         sendBtn.disabled = true;
         box.disabled = true;
@@ -629,13 +642,13 @@
       if (modeLabel) modeLabel.textContent = "兼容 · 未加密";
       if (warnEl) {
         warnEl.className = "warn danger";
-        warnEl.innerHTML = "<b>未加密。</b>同一局域网的人可能看到内容。要加密请扫电脑上的 B。";
+        warnEl.innerHTML = "<b>未加密。</b>同一局域网的人可能看到内容。要加密请扫" + hostWord + "上的 B。";
       }
     } else {
       try {
         selfTest();
       } catch (e) {
-        status.textContent = "页面加密自检失败，请重新从电脑打开。";
+        status.textContent = "页面加密自检失败，请重新从" + hostWord + "打开。";
         setLink("dead", "页面不可用");
         sendBtn.disabled = true;
         box.disabled = true;
@@ -647,7 +660,7 @@
         if (tlsLabel) tlsLabel.textContent = "兼容 · 证书";
       }
       if (!sid || !keyB64) {
-        status.textContent = "请用电脑上「兼容模式」的二维码打开，不要手打地址。";
+        status.textContent = "请用" + hostWord + "上「兼容模式」的二维码打开，不要手打地址。";
         setLink("dead", "未连接");
         sendBtn.disabled = true;
         box.disabled = true;
@@ -727,6 +740,7 @@
         if (!r.ok) return null;
         return r.json();
       }).then(function (info) {
+        if (info && info.host) applyHost(String(info.host));
         if (info && info.app) showAppVersion(String(info.app));
       }).catch(function () {});
     }
@@ -758,21 +772,21 @@
     });
     es.onerror = function () {
       if (es.readyState === EventSource.CLOSED) {
-        markDead("和电脑断开了");
+        markDead("和" + hostWord + "断开了");
         return;
       }
       if (downTimer) return;
       downTimer = setTimeout(function () {
         downTimer = null;
         if (es.readyState === EventSource.OPEN) return;
-        markDown("和电脑断开了，正在重连");
+        markDown("和" + hostWord + "断开了，正在重连");
         fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
           if (r.status === 401) {
             es.close();
             markDead("会话已失效，请重新扫码");
           }
         }).catch(function () {
-          markDown("和电脑断开了，正在重连");
+          markDown("和" + hostWord + "断开了，正在重连");
         });
       }, 700);
     };
@@ -815,7 +829,7 @@
       }).then(function (res) {
         if (res.status === 204) {
           box.value = "";
-          status.textContent = "已发到电脑";
+          status.textContent = "已发到" + hostWord;
           addSent(text, sentAt);
         } else if (res.status === 401) {
           status.textContent = "会话已失效，请重新扫码。";
@@ -824,7 +838,7 @@
         }
       }).catch(function () {
         status.textContent = "发送失败";
-        markDown("和电脑断开了，正在重连");
+        markDown("和" + hostWord + "断开了，正在重连");
       }).then(function () {
         sendBtn.disabled = false;
       });
@@ -1206,7 +1220,7 @@
         headers: authHeaders(),
         signal: signal
       }).then(function (r) {
-        if (r.status === 404) throw new Error("文件已不在电脑上");
+        if (r.status === 404) throw new Error("文件已不在" + hostWord + "上");
         if (!r.ok) throw new Error("下载失败");
         return r.arrayBuffer();
       }).then(function (buf) {
@@ -1646,7 +1660,7 @@
               sending = false;
               if (failed) return;
               if (pcStopped(res)) {
-                fail(new Error("电脑已停止"));
+                fail(new Error(hostWord + "已停止"));
                 return;
               }
               if (res.status === 204) {
@@ -1685,7 +1699,7 @@
         show(file.size, "保存");
         return postRetry("/api/file/finish?" + qAuth() + "&id=" + encodeURIComponent(id), new Uint8Array(0), null, 2, seq)
           .then(function (res) {
-            if (pcStopped(res)) throw new Error("电脑已停止");
+            if (pcStopped(res)) throw new Error(hostWord + "已停止");
             if (res.status === 204) {
               forgetId(label, file);
               addSent(label, Date.now());
@@ -1713,7 +1727,7 @@
         fileBusy = false;
         lockPicks(false);
         setProgress(false);
-        status.textContent = "已发到电脑";
+        status.textContent = "已发到" + hostWord;
         renderPending();
         return;
       }
@@ -1775,7 +1789,7 @@
         var headers = authHeaders({ "Content-Type": "application/octet-stream" });
         Object.keys(headers).forEach(function (k) { xhr.setRequestHeader(k, headers[k]); });
         xhr.send(new Uint8Array(0));
-      } catch (e) { /* 告诉不上电脑，半截还在，下次再发会续上 */ }
+      } catch (e) { /* 告诉不上对面，半截还在，下次再发会续上 */ }
     }
     function stopTransfer() {
       if (!fileBusy && !activeXhr) return;

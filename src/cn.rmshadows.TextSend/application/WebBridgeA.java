@@ -505,6 +505,7 @@ public final class WebBridgeA {
         o.addProperty("encrypt", false);
         o.addProperty("pageVersion", "1");
         o.addProperty("app", TextSendMain.VERSION);
+        o.addProperty("host", "电脑");
         o.addProperty("warning", WARN);
         byte[] body = o.toString().getBytes(StandardCharsets.UTF_8);
         Headers h = ex.getResponseHeaders();

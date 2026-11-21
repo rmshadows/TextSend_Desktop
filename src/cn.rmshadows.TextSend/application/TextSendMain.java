@@ -4635,11 +4635,31 @@ public class TextSendMain {
         area.setBorder(new EmptyBorder(UserConfig.s(8), UserConfig.s(10), UserConfig.s(8), UserConfig.s(10)));
         JScrollPane sp = new JScrollPane(area);
         sp.setPreferredSize(new Dimension(UserConfig.s(520), UserConfig.s(420)));
+        JLabel repo = new JLabel("<html><a href=\"https://github.com/rmshadows/TextSend_Desktop\">GitHub · TextSend Desktop</a></html>");
+        repo.setHorizontalAlignment(SwingConstants.CENTER);
+        repo.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        repo.setBorder(new EmptyBorder(UserConfig.s(6), UserConfig.s(8), UserConfig.s(8), UserConfig.s(8)));
+        repo.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                try {
+                    if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                        Desktop.getDesktop().browse(URI.create("https://github.com/rmshadows/TextSend_Desktop"));
+                    }
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(helpDialog, "打不开浏览器", "帮助", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        });
+        JPanel helpBox = new JPanel(new BorderLayout());
+        helpBox.setBackground(CARD);
+        helpBox.add(sp, BorderLayout.CENTER);
+        helpBox.add(repo, BorderLayout.SOUTH);
         if (helpDialog != null && helpDialog.isShowing()) {
             helpDialog.toFront();
             return;
         }
-        JOptionPane helpPane = new JOptionPane(sp, JOptionPane.PLAIN_MESSAGE);
+        JOptionPane helpPane = new JOptionPane(helpBox, JOptionPane.PLAIN_MESSAGE);
         helpDialog = helpPane.createDialog(frame, "帮助 · TextSend " + VERSION);
         helpDialog.setModalityType(Dialog.ModalityType.MODELESS);
         helpDialog.setResizable(true);
