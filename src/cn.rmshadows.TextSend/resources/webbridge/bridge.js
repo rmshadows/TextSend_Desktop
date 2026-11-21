@@ -441,7 +441,12 @@
   var floatKind = "wait";
   var floatBusy = false;
   var floatPct = 0;
-  var floatPrefs = { show: true, send: false, dlPrompt: false, x: null, y: null };
+  var floatPrefs = { show: true, send: false, dlPrompt: false, lockZoom: false, lockScale: 1, x: null, y: null };
+  var VIEW_FREE = "width=device-width, initial-scale=1, viewport-fit=cover";
+  function blockZoomGesture(e) { e.preventDefault(); }
+  function blockPinch(e) {
+    if (e.touches && e.touches.length > 1) e.preventDefault();
+  }
   var floatDragged = false;
   function loadFloatPrefs() {
     try {
@@ -451,6 +456,8 @@
       if (o.show === false) floatPrefs.show = false;
       if (o.send) floatPrefs.send = true;
       if (o.dlPrompt) floatPrefs.dlPrompt = true;
+      if (o.lockZoom) floatPrefs.lockZoom = true;
+      if (typeof o.lockScale === "number" && o.lockScale > 0) floatPrefs.lockScale = o.lockScale;
       if (typeof o.x === "number" && typeof o.y === "number") {
         floatPrefs.x = o.x;
         floatPrefs.y = o.y;
@@ -460,8 +467,49 @@
   function saveFloatPrefs() {
     try { localStorage.setItem("ts-web-ui", JSON.stringify(floatPrefs)); } catch (e) {}
   }
+  function viewMeta() {
+    return document.querySelector('meta[name="viewport"]');
+  }
+  function applyZoomLock() {
+    var meta = viewMeta();
+    var on = !!floatPrefs.lockZoom;
+    if (meta) {
+      if (on) {
+        var s = String(Math.round(floatPrefs.lockScale * 1000) / 1000);
+        meta.setAttribute("content", "width=device-width, initial-scale=" + s + ", minimum-scale=" + s + ", maximum-scale=" + s + ", user-scalable=no, viewport-fit=cover");
+      } else {
+        meta.setAttribute("content", VIEW_FREE);
+      }
+    }
+    if (on) {
+      document.addEventListener("gesturestart", blockZoomGesture, { passive: false });
+      document.addEventListener("gesturechange", blockZoomGesture, { passive: false });
+      document.addEventListener("touchmove", blockPinch, { passive: false });
+    } else {
+      document.removeEventListener("gesturestart", blockZoomGesture);
+      document.removeEventListener("gesturechange", blockZoomGesture);
+      document.removeEventListener("touchmove", blockPinch);
+    }
+    var btn = document.getElementById("floatLock");
+    if (btn) {
+      btn.textContent = on ? "固定" : "缩放";
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    var box = document.getElementById("optZoom");
+    if (box) box.checked = on;
+  }
+  function setZoomLock(on) {
+    floatPrefs.lockZoom = !!on;
+    if (on) {
+      var scale = window.visualViewport && window.visualViewport.scale ? window.visualViewport.scale : 1;
+      if (!(scale > 0)) scale = 1;
+      floatPrefs.lockScale = Math.max(0.5, Math.min(scale, 5));
+    }
+    saveFloatPrefs();
+    applyZoomLock();
+  }
   function placeFloat() {
-    var dot = document.getElementById("floatDot");
+    var dot = document.getElementById("floatDock") || document.getElementById("floatDot");
     if (!dot || floatPrefs.x == null || floatPrefs.y == null) return;
     var w = dot.offsetWidth || 44;
     var h = dot.offsetHeight || 44;
@@ -491,7 +539,9 @@
     var prog = document.getElementById("progressWrap");
     var rect = prog ? prog.getBoundingClientRect() : null;
     var progAway = !!(floatBusy && rect && (rect.bottom < 48 || rect.top > window.innerHeight - 24));
-    if (!dot.classList.contains("dragging")) dot.hidden = !(away || progAway);
+    var dock = document.getElementById("floatDock");
+    var dragging = (dock && dock.classList.contains("dragging")) || dot.classList.contains("dragging");
+    if (!dragging) dot.hidden = !(away || progAway);
     var kind = floatKind || "wait";
     if (floatBusy && progAway) kind = "busy";
     var text = "";
@@ -613,7 +663,9 @@
     var dropzone = document.getElementById("dropzone");
     function lockPicks(off) {
       [pickImg, pickFile, pickDir].forEach(function (b) {
-        if (b) b.disabled = off;
+        if (!b) return;
+        if (b.tagName === "LABEL") b.setAttribute("aria-disabled", off ? "true" : "false");
+        else b.disabled = off;
       });
       if (dropzone) {
         dropzone.setAttribute("aria-disabled", off ? "true" : "false");
@@ -1839,18 +1891,34 @@
       }
       status.textContent = "已加入待发 " + added + " 个。点「发送待发」开始传。";
     }
+    function iosNoFolder() {
+      var ua = navigator.userAgent || "";
+      return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    }
     function bindPick(btn, input, asDir) {
       if (!btn || !input) return;
-      btn.addEventListener("click", function (e) {
-        e.preventDefault();
-        if (!alive || fileBusy) return;
-        try {
-          input.value = "";
-          input.click();
-        } catch (err) {
-          status.textContent = "打不开系统选择框";
-        }
-      });
+      if (asDir && iosNoFolder()) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          status.textContent = "这部手机的浏览器不能选文件夹，请用「文件」多选。";
+        });
+      } else if (!asDir) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          if (!alive || fileBusy) return;
+          try {
+            input.value = "";
+            input.click();
+          } catch (err) {
+            status.textContent = "打不开系统选择框";
+          }
+        });
+      } else {
+        btn.addEventListener("click", function () {
+          if (!alive || fileBusy) return;
+          try { input.value = ""; } catch (err) {}
+        });
+      }
       input.addEventListener("change", function () {
         var list = input.files;
         enqueue(list, asDir);
@@ -2043,9 +2111,12 @@
     var optFloat = document.getElementById("optFloat");
     var optFloatSend = document.getElementById("optFloatSend");
     var optDlPrompt = document.getElementById("optDlPrompt");
+    var optZoom = document.getElementById("optZoom");
+    var floatLock = document.getElementById("floatLock");
     if (optFloat) optFloat.checked = floatPrefs.show !== false;
     if (optFloatSend) optFloatSend.checked = !!floatPrefs.send;
     if (optDlPrompt) optDlPrompt.checked = !!floatPrefs.dlPrompt;
+    applyZoomLock();
     function openSettings() { if (settings) settings.hidden = false; }
     function closeSettings() { if (settings) settings.hidden = true; }
     var openBtn = document.getElementById("openSettings");
@@ -2077,14 +2148,25 @@
         saveFloatPrefs();
       });
     }
-    if (floatDot && floatMain) {
+    if (optZoom) {
+      optZoom.addEventListener("change", function () {
+        setZoomLock(!!optZoom.checked);
+      });
+    }
+    if (floatLock) {
+      floatLock.addEventListener("click", function () {
+        setZoomLock(!floatPrefs.lockZoom);
+      });
+    }
+    var floatDock = document.getElementById("floatDock") || floatDot;
+    if (floatDock && floatMain) {
       var drag = null;
       floatMain.addEventListener("pointerdown", function (e) {
         if (e.button != null && e.button !== 0) return;
-        var box = floatDot.getBoundingClientRect();
+        var box = floatDock.getBoundingClientRect();
         drag = { x: e.clientX, y: e.clientY, left: box.left, top: box.top, moved: false };
         floatDragged = false;
-        floatDot.classList.add("dragging");
+        floatDock.classList.add("dragging");
         if (floatMain.setPointerCapture) floatMain.setPointerCapture(e.pointerId);
       });
       floatMain.addEventListener("pointermove", function (e) {
@@ -2102,7 +2184,7 @@
         floatDragged = drag.moved;
         if (drag.moved) saveFloatPrefs();
         drag = null;
-        floatDot.classList.remove("dragging");
+        floatDock.classList.remove("dragging");
         paintFloat();
       }
       floatMain.addEventListener("pointerup", endDrag);

@@ -149,10 +149,24 @@
       color: var(--accent-ink);
       min-height: 44px;
     }
-    button.ghost {
+    button.ghost, label.ghost {
       background: #f3f5f8;
       color: var(--ink);
       padding: 8px 12px;
+    }
+    label.ghost {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      border-radius: 10px;
+      font: inherit;
+      font-weight: 600;
+    }
+    label.ghost[aria-disabled="true"] {
+      color: #98a0aa;
+      background: #eef1f4;
+      pointer-events: none;
     }
     button.stop { background: #fff; color: var(--danger); box-shadow: inset 0 0 0 1px #f0c7c4; }
     button:disabled { color: #98a0aa; background: #eef1f4; }
@@ -176,8 +190,8 @@
       -webkit-user-select: text;
       user-select: text;
     }
-    .tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .tools button { margin: 0; }
+    .tools { display: flex; flex-wrap: wrap; margin-top: 10px; }
+    .tools > * { margin: 0 8px 8px 0; }
     .empty { color: var(--muted); margin: 0; }
     .sent-title { margin-top: 16px; }
     /* iOS 上 display:none / hidden 会导致点「图片」打不开图库 */
@@ -307,14 +321,17 @@
       background: transparent;
       color: var(--accent);
       font: inherit;
-      font-size: 0.78rem;
+      font-size: 0.92rem;
       font-weight: 650;
-      min-height: 0;
-      padding: 0;
+      min-height: 44px;
+      padding: 8px 4px;
     }
     .sheet {
       position: fixed;
-      inset: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
       z-index: 50;
       background: rgba(22, 24, 29, 0.28);
       display: flex;
@@ -342,16 +359,21 @@
     .hint { margin: 4px 0 0 28px; color: var(--muted); font-size: 0.85rem; }
     .ver { margin: 14px 0; color: var(--muted); font-size: 0.85rem; }
     .sheet-card > button { width: 100%; }
-    .float-dot {
+    .float-dock {
       position: fixed;
       z-index: 40;
       right: 14px;
       bottom: calc(14px + env(safe-area-inset-bottom));
       display: flex;
       align-items: center;
-      gap: 6px;
+    }
+    .float-dock > * + * { margin-left: 6px; }
+    .float-dot {
+      display: flex;
+      align-items: center;
       touch-action: none;
     }
+    .float-dot > * + * { margin-left: 6px; }
     .float-dot.dragging { opacity: 0.92; }
     .float-dot button {
       min-height: 44px;
@@ -375,6 +397,18 @@
     .float-dot.solo #floatMain { width: 44px; padding: 0; }
     .float-dot[hidden] { display: none; }
     .float-send { padding: 0 14px; }
+    .float-lock {
+      min-height: 44px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 6px 20px rgba(22, 24, 29, 0.18);
+    }
+    .float-lock[aria-pressed="true"] {
+      background: var(--accent);
+      color: #fff;
+    }
     .float-dot i {
       width: 10px;
       height: 10px;
@@ -436,12 +470,12 @@
           <button id="send" type="button">发送文字</button>
           <button id="pickImg" class="ghost" type="button">图片</button>
           <button id="pickFile" class="ghost" type="button">文件</button>
-          <button id="pickDir" class="ghost" type="button">文件夹</button>
+          <label id="pickDir" class="ghost" for="inDir">文件夹</label>
         </div>
         <div id="dropzone" class="dropzone" role="button" tabindex="0">拖到这里，或直接拖进上面的输入框。松开后加入待发</div>
         <input id="inImg" class="sr-only" type="file" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.gif,.webp" multiple>
         <input id="inFile" class="sr-only" type="file" multiple>
-        <input id="inDir" class="sr-only" type="file" multiple webkitdirectory>
+        <input id="inDir" class="sr-only" type="file" multiple webkitdirectory directory>
         <div id="pendingBox" class="pending" hidden>
           <h2>待发文件（<span id="pendingCount">0</span>）</h2>
           <div id="pendingList"></div>
@@ -483,14 +517,19 @@
       <label class="check"><input id="optFloatSend" type="checkbox"> 悬浮点带「发送」</label>
       <p class="hint">滑到下面时，用悬浮点发输入框里的文字。</p>
       <label class="check"><input id="optDlPrompt" type="checkbox"> 接收完成后弹出下载框</label>
+      <label class="check"><input id="optZoom" type="checkbox"> 禁止页面缩放</label>
+      <p class="hint">点一下固定当前大小。悬浮球旁的「缩放」是同一个开关。</p>
       <p id="dlHint" class="hint">电脑发来的文件收完后，交给浏览器保存。关掉则点「保存」再放进下载目录。</p>
       <p id="verLine" class="ver">电脑端 —</p>
       <button id="closeSettings" type="button">完成</button>
     </div>
   </div>
-  <div id="floatDot" class="float-dot wait solo" hidden>
-    <button id="floatMain" type="button" aria-label="连接状态"><i></i><span id="floatText" hidden></span></button>
-    <button id="floatSend" class="float-send" type="button" hidden>发送</button>
+  <div id="floatDock" class="float-dock">
+    <div id="floatDot" class="float-dot wait solo" hidden>
+      <button id="floatMain" type="button" aria-label="连接状态"><i></i><span id="floatText" hidden></span></button>
+      <button id="floatSend" class="float-send" type="button" hidden>发送</button>
+    </div>
+    <button id="floatLock" class="float-lock" type="button" aria-pressed="false">缩放</button>
   </div>
   <script src="/bridge.js"></script>
 </body>
