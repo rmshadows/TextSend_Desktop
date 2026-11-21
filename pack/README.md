@@ -116,7 +116,7 @@ wix extension add -g WixToolset.UI.wixext
 
 ## 产物怎么用
 
-- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.60.jar`（版本号随 `TextSendMain.VERSION`）
+- **JAR**：对方要装 Java 17+。`java -jar dist/Textsend_5.0.64.jar`（版本号随 `TextSendMain.VERSION`）
 - **绿色目录**：解压即用，不必装系统 Java。见下「日常 / 调试启动器」。
 - **deb 安装包**：`TextSend-<版本>-linux-<架构>-installer.deb` 按打包机依赖；`…-installer-compat.deb` 是兼容包。装一份即可，不要两个一起装。一般装到 `/opt`。开始菜单有两个入口：`textsend.desktop`（窗口）和 `textsend-cli.desktop`（终端）。Fedora / Arch 请用绿色 `.tar.gz`
 - **安装包**：Windows `TextSend-<版本>-windows-installer.exe`，macOS `TextSend-<版本>-macos-installer.dmg`。Mac 的 dmg 未签名，可能要右键打开

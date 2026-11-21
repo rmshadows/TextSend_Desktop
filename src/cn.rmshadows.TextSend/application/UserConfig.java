@@ -105,6 +105,15 @@ public final class UserConfig {
         return fallback;
     }
 
+    /** 配置文件所在目录。根证书放在这里的 textsend-ca，不建 ~/.config。 */
+    public static Path configDirectory() {
+        Path parent = FILE.getParent();
+        if (parent != null) {
+            return parent;
+        }
+        return Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+    }
+
     /** 只检查权限，不在系统目录里创建探测文件。 */
     private static boolean canWriteDir(Path dir) {
         try {

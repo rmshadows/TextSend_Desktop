@@ -5,6 +5,9 @@ import com.google.gson.JsonParser;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsParameters;
+import com.sun.net.httpserver.HttpsServer;
 import protocol.AesGcm;
 import protocol.B64;
 import protocol.FileNames;
@@ -13,6 +16,8 @@ import protocol.PasteUtil;
 import protocol.Protocol;
 
 import javax.imageio.ImageIO;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.swing.SwingUtilities;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -39,8 +44,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 网页桥 Way B：本机 HTTP，应用层 AES-GCM。不走 v1 的 TCP。
+ * 网页桥 Way B / C：B 是 HTTP，C 是同一套应用层 AES-GCM 再套 HTTPS。不走 v1 的 TCP。
  * 二维码把会话密钥放在 URL 的 # 后面，浏览器不会把它发给这里。
+ * C 的根证书可选。装进手机信任库后浏览器不再提示不受信任；不装也能打开页面。
  */
 public final class WebBridge {
     public static final int DEFAULT_PORT = 54301;
@@ -66,6 +72,8 @@ public final class WebBridge {
     });
 
     private static HttpServer server;
+    /** true 表示当前监听是 HTTPS（Way C）。停干净后才清掉。 */
+    private static boolean tls;
     private static boolean shutdownHooked;
     private static ExecutorService workers;
     private static int boundPort;
@@ -98,6 +106,12 @@ public final class WebBridge {
     public static int port() {
         synchronized (LOCK) {
             return boundPort;
+        }
+    }
+
+    public static boolean isTls() {
+        synchronized (LOCK) {
+            return server != null && tls;
         }
     }
 
@@ -177,26 +191,39 @@ public final class WebBridge {
             if (h.indexOf(':') >= 0 && !h.startsWith("[")) {
                 h = "[" + h + "]";
             }
-            return "http://" + h + ":" + boundPort + "/?s=" + sid + "#k=" + B64.enc(ikm);
+            return (tls ? "https://" : "http://") + h + ":" + boundPort + "/?s=" + sid + "#k=" + B64.enc(ikm);
         }
     }
 
     public static void start(int port) throws IOException {
-        synchronized (LOCK) {
-            if (server != null && boundPort == port) {
-                return;
-            }
-        }
-        if (isRunning()) {
+        start(port, false);
+    }
+
+    /** Way C：同一套会话和页面，外面换成 HTTPS。 */
+    public static void startTls(int port) throws IOException {
+        start(port, true);
+    }
+
+    private static void start(int port, boolean https) throws IOException {
+        if (isRunning() && isTls() == https) {
             rebind(port);
             return;
         }
-        bind(port);
-        try {
-            mint();
-        } catch (RuntimeException e) {
+        if (isRunning()) {
             shutdown(true);
-            throw e;
+        }
+        synchronized (LOCK) {
+            tls = https;
+        }
+        try {
+            bind(port);
+            mint();
+        } catch (RuntimeException | IOException e) {
+            shutdown(true);
+            if (e instanceof IOException io) {
+                throw io;
+            }
+            throw new IOException(e.getMessage() == null ? "启动失败" : e.getMessage(), e);
         }
     }
 
@@ -342,11 +369,30 @@ public final class WebBridge {
         if (port < 1 || port > 65535) {
             throw new IOException("端口无效");
         }
+        boolean https;
+        synchronized (LOCK) {
+            https = tls;
+        }
         HttpServer hs;
         try {
-            hs = HttpServer.create(new InetSocketAddress(port), 0);
+            if (https) {
+                HttpsServer secure = HttpsServer.create(new InetSocketAddress(port), 0);
+                SSLContext ctx = LanCert.material().context;
+                secure.setHttpsConfigurator(new HttpsConfigurator(ctx) {
+                    @Override
+                    public void configure(HttpsParameters params) {
+                        SSLParameters ssl = ctx.getDefaultSSLParameters();
+                        params.setSSLParameters(ssl);
+                    }
+                });
+                hs = secure;
+            } else {
+                hs = HttpServer.create(new InetSocketAddress(port), 0);
+            }
         } catch (IOException e) {
             throw new IOException("端口 " + port + " 无法监听（可能被占用）", e);
+        } catch (Exception e) {
+            throw new IOException(e.getMessage() == null ? "证书失败" : e.getMessage(), e);
         }
         hs.createContext("/", WebBridge::handle);
         ExecutorService pool = Executors.newCachedThreadPool(r -> {
@@ -455,6 +501,7 @@ public final class WebBridge {
             clients.clear();
             if (clearSession) {
                 dropBox = true;
+                tls = false;
                 aesKey = null;
                 sid = null;
                 if (ikm != null) {
@@ -492,6 +539,8 @@ public final class WebBridge {
                 staticFile(ex, "index.html", "text/html; charset=utf-8");
             } else if ("/bridge.js".equals(path)) {
                 staticFile(ex, "bridge.js", "text/javascript; charset=utf-8");
+            } else if ("/ca.crt".equals(path)) {
+                caCert(ex);
             } else if ("/api/meta".equals(path)) {
                 meta(ex);
             } else if ("/api/send".equals(path)) {
@@ -526,6 +575,38 @@ public final class WebBridge {
             } catch (IOException ignored) {
                 // 头已经发出去时（比如下行流）不能再回一包
             }
+        }
+    }
+
+    /** 只下发根证书。私钥留在电脑上。 */
+    private static void caCert(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod()) && !"HEAD".equals(ex.getRequestMethod())) {
+            text(ex, 405, "method");
+            return;
+        }
+        if (!isTls() || !sessionOk(ex)) {
+            text(ex, 404, "not found");
+            return;
+        }
+        byte[] body;
+        try {
+            body = Files.readAllBytes(LanCert.caCertificate());
+        } catch (Exception e) {
+            text(ex, 500, "error");
+            return;
+        }
+        Headers h = ex.getResponseHeaders();
+        h.set("Content-Type", "application/x-x509-ca-cert");
+        h.set("Content-Disposition", "attachment; filename=\"textsend-ca.crt\"");
+        h.set("Cache-Control", "no-store");
+        h.set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, "HEAD".equals(ex.getRequestMethod()) ? -1 : body.length);
+        if (!"HEAD".equals(ex.getRequestMethod())) {
+            try (OutputStream os = ex.getResponseBody()) {
+                os.write(body);
+            }
+        } else {
+            ex.close();
         }
     }
 

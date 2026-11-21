@@ -502,7 +502,8 @@
     if (line) line.textContent = "电脑端 " + ver;
     var mode = document.getElementById("modeLabel");
     if (!mode) return;
-    var base = mode.textContent.indexOf("未加密") >= 0 ? "兼容 · 未加密" : "兼容模式";
+    var base = mode.textContent.indexOf("未加密") >= 0 ? "兼容 · 未加密"
+      : (mode.textContent.indexOf("证书") >= 0 ? "兼容 · 证书" : "兼容模式");
     mode.textContent = base + " · " + ver;
   }
   function noteProgress(on, pct) {
@@ -567,6 +568,15 @@
   }
 
   function boot() {
+    var caFold = document.getElementById("caFold");
+    var caSteps = document.getElementById("caSteps");
+    if (caFold && caSteps) {
+      caFold.addEventListener("click", function () {
+        var open = caFold.getAttribute("aria-expanded") === "true";
+        caFold.setAttribute("aria-expanded", open ? "false" : "true");
+        caSteps.hidden = open;
+      });
+    }
     var status = document.getElementById("status");
     var box = document.getElementById("box");
     var sendBtn = document.getElementById("send");
@@ -632,6 +642,10 @@
         lockPicks(true);
         return;
       }
+      if (location.protocol === "https:") {
+        var tlsLabel = document.getElementById("modeLabel");
+        if (tlsLabel) tlsLabel.textContent = "兼容 · 证书";
+      }
       if (!sid || !keyB64) {
         status.textContent = "请用电脑上「兼容模式」的二维码打开，不要手打地址。";
         setLink("dead", "未连接");
@@ -639,6 +653,14 @@
         box.disabled = true;
         lockPicks(true);
         return;
+      }
+      if (location.protocol === "https:") {
+        var caRow = document.getElementById("caRow");
+        var installCa = document.getElementById("installCa");
+        if (caRow && installCa) {
+          installCa.href = "/ca.crt?s=" + encodeURIComponent(sid);
+          caRow.hidden = false;
+        }
       }
     }
     var key = null;

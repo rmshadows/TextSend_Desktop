@@ -61,6 +61,62 @@
     }
     .warn.danger { background: #fff5f4; color: #8d2d28; }
     #status { min-height: 1.5em; margin: 0 0 12px; color: var(--muted); font-size: 0.92rem; }
+    .ca-row {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .ca-row[hidden] { display: none; }
+    .ca-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 10px;
+    }
+    .ca-bar a {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font-weight: 600;
+      padding: 8px 12px;
+      min-height: 44px;
+      border-radius: 10px;
+      background: #f3f5f8;
+      color: var(--ink);
+    }
+    button.ca-fold {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+      padding: 8px 0;
+      min-height: 44px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      font-weight: 650;
+    }
+    button.ca-fold::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(-45deg);
+      margin-top: -2px;
+    }
+    button.ca-fold[aria-expanded="true"]::before {
+      transform: rotate(45deg);
+      margin-top: 2px;
+    }
+    .ca-note { flex: 1 1 14rem; }
+    .ca-steps { margin-top: 8px; font-size: 0.88rem; }
+    .ca-steps p { margin: 6px 0 0; }
+    .ca-steps p:first-child { margin-top: 0; }
     .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
     .card {
       background: var(--card);
@@ -332,6 +388,13 @@
     .float-dot.busy i { background: var(--accent); box-shadow: 0 0 0 4px rgba(61, 126, 255, 0.18); }
     .float-dot span { font-size: 0.82rem; font-weight: 700; }
     .float-dot span[hidden] { display: none; }
+    .repo {
+      margin: 18px 0 0;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .repo a { color: var(--accent); font-weight: 650; text-decoration: none; }
     @media (max-width: 799px) {
       #send { flex: 1 1 100%; }
       .top { align-items: flex-start; }
@@ -352,6 +415,18 @@
       <div id="link" class="chip wait">连接中</div>
     </div>
     <div id="warn" class="warn">浏览器传文字、图片和文件。只在可信局域网用。中断可续传，单个最大 20GB。</div>
+    <div id="caRow" class="ca-row" hidden>
+      <div class="ca-bar">
+        <a id="installCa" href="/ca.crt">安装证书</a>
+        <button id="caFold" class="ca-fold" type="button" aria-expanded="false" aria-controls="caSteps">清除证书</button>
+        <span class="ca-note">可选。点一下下载根证书，按手机提示安装并信任。</span>
+      </div>
+      <div id="caSteps" class="ca-steps" hidden>
+        <p>已经装进系统的根证书，网页删不掉。名称是 TextSend LAN CA。机型菜单可能略有不同，找到「受信任的凭据」或「描述文件」即可。</p>
+        <p><b>安卓</b>：设置 → 安全和隐私 → 更多安全和隐私 → 加密与凭据 → 受信任的凭据 → 用户 → TextSend LAN CA → 移除。有的手机在「用户凭据」里。</p>
+        <p><b>iPhone</b>：设置 → 通用 → VPN 与设备管理 → TextSend LAN CA → 移除描述文件。再到 设置 → 通用 → 关于本机 → 证书信任设置，确认它已经关掉。</p>
+      </div>
+    </div>
     <p id="status"></p>
     <div class="grid">
       <section class="card" id="sendCard">
@@ -398,6 +473,7 @@
         <div id="incoming"></div>
       </section>
     </div>
+    <p class="repo"><a href="https://github.com/rmshadows/TextSend_Desktop" target="_blank" rel="noopener noreferrer">GitHub · TextSend Desktop</a></p>
   </div>
   <div id="settings" class="sheet" hidden>
     <div class="sheet-card" role="dialog" aria-labelledby="settingsTitle">

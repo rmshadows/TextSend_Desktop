@@ -81,7 +81,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * 置顶 = 紧凑小窗；非置顶 = 大 UI（单击复制连接串，双击复制 PIN/密钥）。
  */
 public class TextSendMain {
-    public static final String VERSION = "5.0.63";
+    public static final String VERSION = "5.0.64";
 
     @Deprecated public static final String SERVER_ID = "-200";
     @Deprecated public static final String FB_MSG = "cn.rmshadows.TextSend.ServerStatusFeedback";
@@ -240,6 +240,7 @@ public class TextSendMain {
     private static JTextArea webUrlArea;
     private static JButton webPowerBtn;
     private static JButton webRefreshBtn;
+    private static JButton webCaBtn;
     private static Timer webDialogTimer;
     private static String webQrShown;
     /** paintWebDialog 在这段时间内保留「已复制链接」，不被 1 秒刷新盖掉。 */
@@ -510,7 +511,7 @@ public class TextSendMain {
         buttonFile = new JButton("文件");
         buttonQr = new JButton("二维码");
         buttonWeb = new JButton(webBridgeAnyRunning() ? "兼容中" : "兼容模式");
-        buttonWeb.setToolTipText("给没装 TextSend 的手机用，比如 iPhone 浏览器。B 加密 / A 明文同一端口，同时只开一档。安卓和电脑客户端仍走原来的二维码。");
+        buttonWeb.setToolTipText("给没装 TextSend 的手机用，比如 iPhone 浏览器。A 明文、B 加密、C 证书同一端口，同时只开一档。安卓和电脑客户端仍走原来的二维码。");
         buttonWeb.addActionListener(e -> showWebBridge());
         buttonHelp = new JButton("帮助");
         buttonHelp.setToolTipText("查看操作说明与快捷键");
@@ -2158,14 +2159,17 @@ public class TextSendMain {
             return 'A';
         }
         if (WebBridge.isRunning()) {
-            return 'B';
+            return WebBridge.isTls() ? 'C' : 'B';
         }
         return 0;
     }
 
     private static void stopOtherWebBridge(char keep) {
-        if (keep != 'B' && WebBridge.isRunning()) {
-            WebBridge.stop();
+        if (WebBridge.isRunning()) {
+            char way = WebBridge.isTls() ? 'C' : 'B';
+            if (keep != way) {
+                WebBridge.stop();
+            }
         }
         if (keep != 'A' && WebBridgeA.isRunning()) {
             WebBridgeA.stop();
@@ -2249,7 +2253,8 @@ public class TextSendMain {
 
     private static String webBridgeStatusBrief() {
         if (WebBridge.isRunning()) {
-            return "Web B :" + WebBridge.port()
+            char way = WebBridge.isTls() ? 'C' : 'B';
+            return "Web " + way + " :" + WebBridge.port()
                     + (WebBridge.hasSession() ? (" ×" + WebBridge.listenerCount()) : " 过期");
         }
         if (WebBridgeA.isRunning()) {
@@ -3491,7 +3496,7 @@ public class TextSendMain {
             sessionTargets.add(new SessionTarget(false, host, row));
             panel.add(row);
         }
-        addWebSessionRows(panel, webB, 'B');
+        addWebSessionRows(panel, webB, WebBridge.isTls() ? 'C' : 'B');
         addWebSessionRows(panel, webA, 'A');
 
         panel.add(Box.createVerticalStrut(UserConfig.s(8)));
@@ -4033,9 +4038,9 @@ public class TextSendMain {
             webWayB = new JButton("B 加密");
             webWayA = new JButton("A 明文");
             webWayC = new JButton("C 证书");
-            webWayA.setToolTipText("明文加令牌。和 B 不能同时开。");
-            webWayB.setToolTipText("正文加密。和 A 不能同时开。");
-            webWayC.setToolTipText("还没做，不会启动。");
+            webWayA.setToolTipText("明文加令牌。和 B、C 不能同时开。");
+            webWayB.setToolTipText("正文加密。和 A、C 不能同时开。");
+            webWayC.setToolTipText("HTTPS。根证书可选，不装时浏览器会提示不受信任。和 A、B 不能同时开。");
             webWayB.addActionListener(e -> showWebWay('B'));
             webWayA.addActionListener(e -> showWebWay('A'));
             webWayC.addActionListener(e -> showWebWay('C'));
@@ -4067,13 +4072,17 @@ public class TextSendMain {
             webPowerBtn = new JButton("启动");
             webPowerBtn.setToolTipText("<html>左键：启动或停止<br>右键：启动，并用默认浏览器打开链接。已经在跑则只打开。</html>");
             webRefreshBtn = new JButton("刷新会话");
+            webCaBtn = new JButton("根证书");
+            webCaBtn.setToolTipText("可选。打开根证书。装进手机并信任后，浏览器不再提示不安全。");
+            webCaBtn.addActionListener(e -> openCaCert());
             // 固定同高；启动按钮留够「切换并启动」的宽度
             fixToolbarButton(webPowerBtn, 112);
             fixToolbarButton(webRefreshBtn, 96);
+            fixToolbarButton(webCaBtn, 80);
             JPanel portRow = new JPanel(new FlowLayout(FlowLayout.LEFT, UserConfig.s(6), 0));
             portRow.setOpaque(false);
             portRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-            portRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(36)));
+            portRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, UserConfig.s(72)));
             JLabel portLabel = new JLabel("端口");
             portLabel.setForeground(TEXT);
             portLabel.setFont(portLabel.getFont().deriveFont((float) UserConfig.s(13)));
@@ -4081,6 +4090,7 @@ public class TextSendMain {
             portRow.add(webPortField);
             portRow.add(webPowerBtn);
             portRow.add(webRefreshBtn);
+            portRow.add(webCaBtn);
             JPanel north = new JPanel();
             north.setLayout(new BoxLayout(north, BoxLayout.Y_AXIS));
             north.setOpaque(false);
@@ -4203,15 +4213,27 @@ public class TextSendMain {
     }
 
     /** 右键启动：没开就先开，再用默认浏览器打开当前链接。已在跑则只打开，不停止。 */
+    private static boolean webWayRunning(char way) {
+        if (way == 'A') {
+            return WebBridgeA.isRunning();
+        }
+        if (way == 'C') {
+            return WebBridge.isRunning() && WebBridge.isTls();
+        }
+        if (way == 'B') {
+            return WebBridge.isRunning() && !WebBridge.isTls();
+        }
+        return false;
+    }
+
     private static void openWebBridgeInBrowser() {
-        if (webWayShown != 'A' && webWayShown != 'B') {
+        if (webWayShown != 'A' && webWayShown != 'B' && webWayShown != 'C') {
             return;
         }
-        boolean wayA = webWayShown == 'A';
-        boolean onThis = wayA ? WebBridgeA.isRunning() : WebBridge.isRunning();
+        boolean onThis = webWayRunning(webWayShown);
         if (!onThis) {
             applyWebPort(true);
-            onThis = webWayShown == 'A' ? WebBridgeA.isRunning() : WebBridge.isRunning();
+            onThis = webWayRunning(webWayShown);
         }
         if (!onThis) {
             return;
@@ -4221,7 +4243,7 @@ public class TextSendMain {
     }
 
     private static void toggleWebBridgeShown() {
-        if (webWayShown != 'A' && webWayShown != 'B') {
+        if (webWayShown != 'A' && webWayShown != 'B' && webWayShown != 'C') {
             return;
         }
         char active = webBridgeActiveWay();
@@ -4240,7 +4262,12 @@ public class TextSendMain {
             paintWebDialog();
             return;
         }
-        if (webWayShown == 'B' && WebBridge.isRunning()) {
+        if (webWayShown == 'B' && webWayRunning('B')) {
+            WebBridge.refreshSession();
+            paintWebDialog();
+            return;
+        }
+        if (webWayShown == 'C' && webWayRunning('C')) {
             WebBridge.refreshSession();
             paintWebDialog();
         }
@@ -4269,7 +4296,7 @@ public class TextSendMain {
     }
 
     private static void applyWebPort(boolean startIfStopped) {
-        if (webWayShown != 'A' && webWayShown != 'B') {
+        if (webWayShown != 'A' && webWayShown != 'B' && webWayShown != 'C') {
             return;
         }
         int port;
@@ -4288,7 +4315,7 @@ public class TextSendMain {
         if (!startIfStopped) {
             // 只改端口：当前在跑的那档 rebind
             try {
-                if (active == 'B' && WebBridge.port() != port) {
+                if ((active == 'B' || active == 'C') && WebBridge.port() != port) {
                     WebBridge.rebind(port);
                 } else if (active == 'A' && WebBridgeA.port() != port) {
                     WebBridgeA.rebind(port);
@@ -4311,6 +4338,8 @@ public class TextSendMain {
         try {
             if (webWayShown == 'A') {
                 WebBridgeA.start(port);
+            } else if (webWayShown == 'C') {
+                WebBridge.startTls(port);
             } else {
                 WebBridge.start(port);
             }
@@ -4363,42 +4392,20 @@ public class TextSendMain {
         styleWayButton(webWayC, webWayShown == 'C');
         if (webHintLabel != null) {
             String html = switch (webWayShown) {
-                case 'A' -> "<html>明文，靠扫码令牌。和 B 不能同时开。</html>";
-                case 'C' -> "<html>还没做，点了也不会启动。</html>";
+                case 'A' -> "<html>明文，靠扫码令牌。和 B、C 不能同时开。</html>";
+                case 'C' -> "<html>HTTPS，正文仍加密。页面上可以安装证书，也有清除步骤。不装也能用，浏览器会提示不受信任。</html>";
                 default -> "<html>正文加密。点二维码复制，点链接打开。</html>";
             };
             webHintLabel.setText(html);
         }
-        if (onB || onA) {
-            if (webPowerBtn != null) {
-                webPowerBtn.setEnabled(true);
-            }
-            if (webPortField != null) {
-                webPortField.setEnabled(true);
-            }
-            return;
+        if (webCaBtn != null) {
+            webCaBtn.setVisible(webWayShown == 'C');
         }
         if (webPowerBtn != null) {
-            webPowerBtn.setEnabled(false);
-            webPowerBtn.setText("启动");
-        }
-        if (webRefreshBtn != null) {
-            webRefreshBtn.setEnabled(false);
+            webPowerBtn.setEnabled(true);
         }
         if (webPortField != null) {
-            webPortField.setEnabled(false);
-            webPortField.setText("");
-        }
-        if (webStateLabel != null) {
-            webStateLabel.setText("C 证书还没做");
-        }
-        webQrImage = null;
-        webQrPlaceholder = "C 证书还没做";
-        if (webUrlArea != null) {
-            webUrlArea.setText("");
-        }
-        if (webQrPanel != null) {
-            webQrPanel.repaint();
+            webPortField.setEnabled(true);
         }
     }
 
@@ -4407,14 +4414,14 @@ public class TextSendMain {
             return;
         }
         paintWayChrome();
-        if (webWayShown != 'A' && webWayShown != 'B') {
+        if (webWayShown != 'A' && webWayShown != 'B' && webWayShown != 'C') {
             return;
         }
         boolean wayA = webWayShown == 'A';
-        boolean onThis = wayA ? WebBridgeA.isRunning() : WebBridge.isRunning();
-        boolean session = wayA ? WebBridgeA.hasSession() : WebBridge.hasSession();
+        boolean onThis = webWayRunning(webWayShown);
+        boolean session = wayA ? WebBridgeA.hasSession() : (onThis && WebBridge.hasSession());
         char active = webBridgeActiveWay();
-        int livePort = active == 'A' ? WebBridgeA.port() : (active == 'B' ? WebBridge.port() : 0);
+        int livePort = active == 'A' ? WebBridgeA.port() : (active != 0 ? WebBridge.port() : 0);
         int listeners = wayA ? WebBridgeA.listenerCount() : WebBridge.listenerCount();
         int savedPort = UserConfig.getWebBridgePort();
         String state;
@@ -4423,6 +4430,8 @@ public class TextSendMain {
         } else if (onThis) {
             if (!session) {
                 state = "会话已过期。点「刷新会话」再扫一次。";
+            } else if (webWayShown == 'C') {
+                state = "HTTPS 0.0.0.0:" + livePort + "  ·  手机 " + listeners;
             } else {
                 state = "监听 0.0.0.0:" + livePort + "  ·  手机 " + listeners;
             }
@@ -4469,6 +4478,22 @@ public class TextSendMain {
         }
         if (webQrPanel != null) {
             webQrPanel.repaint();
+        }
+    }
+
+    private static void openCaCert() {
+        try {
+            java.nio.file.Path cert = LanCert.caCertificate();
+            copyText(cert.toAbsolutePath().toString());
+            if (webStateLabel != null) {
+                webStateLabel.setText("已复制根证书路径");
+            }
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+                Desktop.getDesktop().open(cert.toFile());
+            }
+        } catch (Exception e) {
+            String msg = e.getMessage() == null ? "打不开根证书" : e.getMessage();
+            JOptionPane.showMessageDialog(webDialog, msg, "兼容模式", JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -4522,7 +4547,7 @@ public class TextSendMain {
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
                 · 「发到」：在固定 PIN 那一行，默认发给所有（App 和网页都收到）。只发 App：有客户端走 App，没有就走网页。只发兼容：只给网页。App 服务没开时一律发网页；网页也没开就没有发送口。状态栏显示兼容端口和页面数。设置里「兼容模式与 App 互斥」默认关。
-                · 「兼容模式」：在监听那一行。窗口里有 A 明文、B 加密、C 证书（未做），默认停在 B。A/B/C 同时只开一档，共用网页端口（默认 54301）。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。电脑发来的文件在网页里预览、下载或清空。点二维码复制链接，点链接用浏览器打开。
+                · 「兼容模式」：在监听那一行。窗口里有 A 明文、B 加密、C 证书，默认停在 B。A/B/C 同时只开一档，共用网页端口（默认 54301）。C 是 HTTPS，正文仍加密。根证书可选：不装也能扫码打开，浏览器会提示不受信任；想去掉提示再点「根证书」，装进手机并完全信任。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。电脑发来的文件在网页里预览、下载或清空。点二维码复制链接，点链接用浏览器打开。
                 · 「在线」：待授权、App 客户端和网页会话在同一张列表。服务端没开也能看网页。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。网页可断开，也可拉黑。拉黑 App 只拒 App，拉黑网页只拒兼容模式。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线或断开网页，↑↓ 换一台。
                 · 「设置」：探测、限流、冷却、App 黑名单、兼容模式黑名单、人数上限。
                 · 「帮助」：本页。F1 同样。
