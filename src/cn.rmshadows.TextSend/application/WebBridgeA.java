@@ -1040,7 +1040,7 @@ public final class WebBridgeA {
         }
         Headers h = ex.getResponseHeaders();
         h.set("Content-Type", type);
-        h.set("Cache-Control", "no-store");
+        h.set("Cache-Control", "no-cache");
         h.set("Referrer-Policy", "no-referrer");
         h.set("X-Content-Type-Options", "nosniff");
         ex.sendResponseHeaders(200, "HEAD".equals(ex.getRequestMethod()) ? -1 : body.length);

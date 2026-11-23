@@ -148,12 +148,26 @@
       background: var(--accent);
       color: var(--accent-ink);
       min-height: 44px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 1px 0 rgba(22, 24, 29, 0.05), 0 2px 6px rgba(22, 24, 29, 0.08);
+      transition: transform 0.08s ease, background 0.08s ease, box-shadow 0.08s ease;
+    }
+    button:active:not(#floatMain):not(.linkish) {
+      transform: translateY(1px);
+      box-shadow: 0 0 0 rgba(22, 24, 29, 0);
+      background: #2c68e6;
     }
     button.ghost, label.ghost {
       background: #f3f5f8;
       color: var(--ink);
       padding: 8px 12px;
+      box-shadow: inset 0 0 0 1px rgba(22, 24, 29, 0.06);
     }
+    button.ghost:active, label.ghost:active {
+      background: #e4e9f0;
+    }
+    .float-dot button:active { transform: none; background: #fff; }
     label.ghost {
       display: inline-flex;
       align-items: center;
@@ -167,6 +181,60 @@
       color: #98a0aa;
       background: #eef1f4;
       pointer-events: none;
+    }
+    .pick-hit {
+      position: relative;
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      width: 5.6em;
+      min-height: 44px;
+      border-radius: 10px;
+      background: #f3f5f8;
+      color: var(--ink);
+      font: inherit;
+      font-weight: 600;
+    }
+    .pick-hit[aria-disabled="true"] {
+      color: #98a0aa;
+      background: #eef1f4;
+      pointer-events: none;
+    }
+    .pick-hit > span {
+      position: absolute;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .pick-hit input {
+      position: relative;
+      z-index: 1;
+      width: 5.6em;
+      height: 44px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: transparent;
+      font-size: 16px;
+    }
+    .pick-hit input::file-selector-button,
+    .pick-hit input::-webkit-file-upload-button {
+      width: 5.6em;
+      height: 44px;
+      padding: 8px 12px;
+      margin: 0;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: transparent;
+      font: 600 16px/1.2 "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .pick-hit:active input::file-selector-button,
+    .pick-hit:active input::-webkit-file-upload-button {
+      background: #e4e9f0;
     }
     button.stop { background: #fff; color: var(--danger); box-shadow: inset 0 0 0 1px #f0c7c4; }
     button:disabled { color: #98a0aa; background: #eef1f4; }
@@ -323,8 +391,17 @@
       font: inherit;
       font-size: 0.92rem;
       font-weight: 650;
-      min-height: 44px;
-      padding: 8px 4px;
+      line-height: 1.2;
+      min-height: 0;
+      padding: 0 2px;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .linkish:active {
+      transform: none;
+      background: transparent;
+      box-shadow: none;
+      color: #2c68e6;
     }
     .sheet {
       position: fixed;
@@ -363,17 +440,48 @@
       position: fixed;
       z-index: 40;
       right: 14px;
+      bottom: 14px;
       bottom: calc(14px + env(safe-area-inset-bottom));
-      display: flex;
-      align-items: center;
     }
-    .float-dock > * + * { margin-left: 6px; }
+    .float-menu {
+      position: absolute;
+      right: 0;
+      bottom: 52px;
+      min-width: 132px;
+      padding: 8px;
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 8px 28px rgba(22, 24, 29, 0.18);
+    }
+    .float-menu[hidden] { display: none; }
+    .float-menu.below { bottom: auto; top: 52px; }
+    .float-menu button {
+      display: block;
+      width: 100%;
+      min-height: 40px;
+      margin: 0 0 6px;
+      padding: 0 12px;
+      border-radius: 10px;
+      white-space: nowrap;
+    }
+    .float-menu button:last-child { margin-bottom: 0; }
+    .float-menu p {
+      margin: 8px 2px 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .gesture {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
     .float-dot {
       display: flex;
       align-items: center;
       touch-action: none;
     }
-    .float-dot > * + * { margin-left: 6px; }
     .float-dot.dragging { opacity: 0.92; }
     .float-dot button {
       min-height: 44px;
@@ -392,18 +500,17 @@
       background: #fff;
       color: var(--ink);
       cursor: grab;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
+    #floatMain.arming { box-shadow: 0 0 0 6px rgba(61, 126, 255, 0.35); }
     .float-dot.dragging #floatMain { cursor: grabbing; }
     .float-dot.solo #floatMain { width: 44px; padding: 0; }
     .float-dot[hidden] { display: none; }
-    .float-send { padding: 0 14px; }
     .float-lock {
-      min-height: 44px;
-      padding: 0 12px;
-      border-radius: 999px;
-      background: #fff;
+      background: #f3f5f8;
       color: var(--ink);
-      box-shadow: 0 6px 20px rgba(22, 24, 29, 0.18);
     }
     .float-lock[aria-pressed="true"] {
       background: var(--accent);
@@ -470,12 +577,12 @@
           <button id="send" type="button">发送文字</button>
           <button id="pickImg" class="ghost" type="button">图片</button>
           <button id="pickFile" class="ghost" type="button">文件</button>
-          <label id="pickDir" class="ghost" for="inDir">文件夹</label>
+          <span id="pickDir" class="pick-hit"><input id="inDir" type="file" webkitdirectory multiple directory><span>文件夹</span></span>
         </div>
+        <p class="gesture">右下角圆点：点一下出菜单，长按发送文字。手指移动是拖动。选文件夹时先点进目标文件夹，再点底部的「使用此文件夹」。</p>
         <div id="dropzone" class="dropzone" role="button" tabindex="0">拖到这里，或直接拖进上面的输入框。松开后加入待发</div>
-        <input id="inImg" class="sr-only" type="file" accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.gif,.webp" multiple>
+        <input id="inImg" class="sr-only" type="file" accept="image/*" multiple>
         <input id="inFile" class="sr-only" type="file" multiple>
-        <input id="inDir" class="sr-only" type="file" multiple webkitdirectory directory>
         <div id="pendingBox" class="pending" hidden>
           <h2>待发文件（<span id="pendingCount">0</span>）</h2>
           <div id="pendingList"></div>
@@ -513,23 +620,24 @@
     <div class="sheet-card" role="dialog" aria-labelledby="settingsTitle">
       <h2 id="settingsTitle">设置</h2>
       <label class="check"><input id="optFloat" type="checkbox" checked> 显示悬浮状态点</label>
-      <p class="hint">按住圆点拖动，松手记住位置。</p>
-      <label class="check"><input id="optFloatSend" type="checkbox"> 悬浮点带「发送」</label>
-      <p class="hint">滑到下面时，用悬浮点发输入框里的文字。</p>
+      <p class="hint">点一下弹出「发送」和「固定」。长按发送输入框里的文字。手指一动就是拖动，不会发出去。</p>
       <label class="check"><input id="optDlPrompt" type="checkbox"> 接收完成后弹出下载框</label>
       <label class="check"><input id="optZoom" type="checkbox"> 禁止页面缩放</label>
-      <p class="hint">点一下固定当前大小。悬浮球旁的「缩放」是同一个开关。</p>
+      <p class="hint">点一下固定当前大小。圆点菜单里的「固定」是同一个开关。</p>
       <p id="dlHint" class="hint">电脑发来的文件收完后，交给浏览器保存。关掉则点「保存」再放进下载目录。</p>
       <p id="verLine" class="ver">电脑端 —</p>
       <button id="closeSettings" type="button">完成</button>
     </div>
   </div>
   <div id="floatDock" class="float-dock">
+    <div id="floatMenu" class="float-menu" hidden>
+      <button id="floatSend" type="button">发送</button>
+      <button id="floatLock" class="float-lock" type="button" aria-pressed="false">固定</button>
+      <p>长按圆点直接发送</p>
+    </div>
     <div id="floatDot" class="float-dot wait solo" hidden>
       <button id="floatMain" type="button" aria-label="连接状态"><i></i><span id="floatText" hidden></span></button>
-      <button id="floatSend" class="float-send" type="button" hidden>发送</button>
     </div>
-    <button id="floatLock" class="float-lock" type="button" aria-pressed="false">缩放</button>
   </div>
   <script src="/bridge.js"></script>
 </body>

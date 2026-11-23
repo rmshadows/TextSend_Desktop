@@ -492,11 +492,12 @@
     }
     var btn = document.getElementById("floatLock");
     if (btn) {
-      btn.textContent = on ? "固定" : "缩放";
+      btn.textContent = on ? "已固定" : "固定";
       btn.setAttribute("aria-pressed", on ? "true" : "false");
     }
     var box = document.getElementById("optZoom");
     if (box) box.checked = on;
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(placeFloat);
   }
   function setZoomLock(on) {
     floatPrefs.lockZoom = !!on;
@@ -509,29 +510,39 @@
     applyZoomLock();
   }
   function placeFloat() {
-    var dot = document.getElementById("floatDock") || document.getElementById("floatDot");
-    if (!dot || floatPrefs.x == null || floatPrefs.y == null) return;
-    var w = dot.offsetWidth || 44;
-    var h = dot.offsetHeight || 44;
-    var x = Math.max(8, Math.min(window.innerWidth - w - 8, floatPrefs.x));
-    var y = Math.max(8, Math.min(window.innerHeight - h - 8, floatPrefs.y));
-    floatPrefs.x = x;
-    floatPrefs.y = y;
-    dot.style.left = x + "px";
-    dot.style.top = y + "px";
-    dot.style.right = "auto";
-    dot.style.bottom = "auto";
+    var dock = document.getElementById("floatDock") || document.getElementById("floatDot");
+    if (!dock) return;
+    var w = dock.offsetWidth;
+    var h = dock.offsetHeight;
+    if (!w || !h) return;
+    var vv = window.visualViewport;
+    var originLeft = vv ? vv.offsetLeft : 0;
+    var originTop = vv ? vv.offsetTop : 0;
+    var vw = vv ? vv.width : window.innerWidth;
+    var vh = vv ? vv.height : window.innerHeight;
+    var x = floatPrefs.x;
+    var y = floatPrefs.y;
+    if (x == null || y == null) {
+      x = vw - w - 14;
+      y = vh - h - 14;
+    }
+    x = Math.max(8, Math.min(vw - w - 8, x));
+    y = Math.max(8, Math.min(vh - h - 8, y));
+    dock.style.left = Math.round(originLeft + x) + "px";
+    dock.style.top = Math.round(originTop + y) + "px";
+    dock.style.right = "auto";
+    dock.style.bottom = "auto";
   }
   function paintFloat() {
     if (typeof document === "undefined") return;
     var dot = document.getElementById("floatDot");
     var label = document.getElementById("floatText");
     var main = document.getElementById("floatMain");
-    var send = document.getElementById("floatSend");
     if (!dot) return;
-    if (send) send.hidden = !floatPrefs.send;
     if (!floatPrefs.show) {
       dot.hidden = true;
+      var menuOff = document.getElementById("floatMenu");
+      if (menuOff) menuOff.hidden = true;
       return;
     }
     var header = document.querySelector(".top");
@@ -541,7 +552,7 @@
     var progAway = !!(floatBusy && rect && (rect.bottom < 48 || rect.top > window.innerHeight - 24));
     var dock = document.getElementById("floatDock");
     var dragging = (dock && dock.classList.contains("dragging")) || dot.classList.contains("dragging");
-    if (!dragging) dot.hidden = !(away || progAway);
+    if (!dragging) dot.hidden = false;
     var kind = floatKind || "wait";
     if (floatBusy && progAway) kind = "busy";
     var text = "";
@@ -549,7 +560,7 @@
     else if (away && kind === "down") text = "重连中";
     else if (away && kind === "dead") text = "未连接";
     else if (away && kind === "wait") text = "连接中";
-    var solo = !text && !floatPrefs.send;
+    var solo = !text;
     dot.className = "float-dot " + kind + (solo ? " solo" : "") + (dot.classList.contains("dragging") ? " dragging" : "");
     if (label) {
       label.textContent = text;
@@ -664,8 +675,8 @@
     function lockPicks(off) {
       [pickImg, pickFile, pickDir].forEach(function (b) {
         if (!b) return;
-        if (b.tagName === "LABEL") b.setAttribute("aria-disabled", off ? "true" : "false");
-        else b.disabled = off;
+        if (b.tagName === "BUTTON") b.disabled = off;
+        else b.setAttribute("aria-disabled", off ? "true" : "false");
       });
       if (dropzone) {
         dropzone.setAttribute("aria-disabled", off ? "true" : "false");
@@ -775,18 +786,86 @@
         if (b) b.disabled = true;
       });
     }
-    var es = new EventSource("/api/events?" + qAuth());
+    var es = null;
     var downTimer = null;
-    es.onopen = function () {
+    var pickerArmed = false;
+    function quietCloseEvents() {
       if (downTimer) {
         clearTimeout(downTimer);
         downTimer = null;
       }
-      dropped = false;
-      setLink("ok", "已连接");
-      pullMeta();
-      pullOutbox();
-    };
+      if (!es) return;
+      es.onerror = null;
+      es.onopen = null;
+      try { es.close(); } catch (err) {}
+      es = null;
+    }
+    function openEvents() {
+      quietCloseEvents();
+      var stream = new EventSource("/api/events?" + qAuth());
+      es = stream;
+      stream.onopen = function () {
+        if (stream !== es) return;
+        if (downTimer) {
+          clearTimeout(downTimer);
+          downTimer = null;
+        }
+        dropped = false;
+        setLink("ok", "已连接");
+        pullMeta();
+        pullOutbox();
+      };
+      stream.addEventListener("msg", function (ev) {
+        try {
+          var msg;
+          if (modeA) {
+            msg = JSON.parse(String(ev.data));
+          } else {
+            var plain = open(key, stdB64ToBytes(String(ev.data).trim()));
+            msg = JSON.parse(new TextDecoder().decode(plain));
+          }
+          if (msg && msg.type === "text" && typeof msg.body === "string") addIncoming(msg.body, msg.ts);
+          else if (msg && msg.type === "file" && msg.id) addIncomingFile(msg);
+          else if (msg && msg.type === "file-gone" && msg.id) removeIncomingFile(msg.id);
+          else if (msg && msg.type === "file-clear") clearIncomingFiles();
+          if (!dropped) setLink("ok", "已连接");
+        } catch (e) {
+          status.textContent = modeA
+            ? "有一条下行读不了。会话可能已换，请重新扫码。"
+            : "有一条下行解不开。会话可能已换，请重新扫码。";
+        }
+      });
+      stream.addEventListener("bye", function () {
+        if (stream !== es) return;
+        try { stream.close(); } catch (err) {}
+        markDead("会话已失效，请重新扫码");
+      });
+      stream.onerror = function () {
+        if (stream !== es) return;
+        if (document.visibilityState === "hidden") return;
+        if (stream.readyState === EventSource.CLOSED) {
+          markDead("和" + hostWord + "断开了");
+          return;
+        }
+        if (downTimer) return;
+        downTimer = setTimeout(function () {
+          downTimer = null;
+          if (!es || es.readyState === EventSource.OPEN) return;
+          if (document.visibilityState === "hidden") return;
+          markDown("和" + hostWord + "断开了，正在重连");
+          fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
+            if (r.status === 401) {
+              if (es) {
+                try { es.close(); } catch (err) {}
+              }
+              markDead("会话已失效，请重新扫码");
+            }
+          }).catch(function () {
+            markDown("和" + hostWord + "断开了，正在重连");
+          });
+        }, 700);
+      };
+    }
     function pullMeta() {
       fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
         if (!r.ok) return null;
@@ -798,50 +877,23 @@
     }
     pullMeta();
     pullOutbox();
-    es.addEventListener("msg", function (ev) {
-      try {
-        var msg;
-        if (modeA) {
-          msg = JSON.parse(String(ev.data));
-        } else {
-          var plain = open(key, stdB64ToBytes(String(ev.data).trim()));
-          msg = JSON.parse(new TextDecoder().decode(plain));
+    openEvents();
+    window.addEventListener("pagehide", quietCloseEvents);
+    window.addEventListener("pageshow", function () {
+      harvestPicked();
+      if (!es || es.readyState === EventSource.CLOSED) openEvents();
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") {
+        if (downTimer) {
+          clearTimeout(downTimer);
+          downTimer = null;
         }
-        if (msg && msg.type === "text" && typeof msg.body === "string") addIncoming(msg.body, msg.ts);
-        else if (msg && msg.type === "file" && msg.id) addIncomingFile(msg);
-        else if (msg && msg.type === "file-gone" && msg.id) removeIncomingFile(msg.id);
-        else if (msg && msg.type === "file-clear") clearIncomingFiles();
-        if (!dropped) setLink("ok", "已连接");
-      } catch (e) {
-        status.textContent = modeA
-          ? "有一条下行读不了。会话可能已换，请重新扫码。"
-          : "有一条下行解不开。会话可能已换，请重新扫码。";
-      }
-    });
-    es.addEventListener("bye", function () {
-      es.close();
-      markDead("会话已失效，请重新扫码");
-    });
-    es.onerror = function () {
-      if (es.readyState === EventSource.CLOSED) {
-        markDead("和" + hostWord + "断开了");
         return;
       }
-      if (downTimer) return;
-      downTimer = setTimeout(function () {
-        downTimer = null;
-        if (es.readyState === EventSource.OPEN) return;
-        markDown("和" + hostWord + "断开了，正在重连");
-        fetch("/api/meta?" + qAuth(), { cache: "no-store", headers: authHeaders() }).then(function (r) {
-          if (r.status === 401) {
-            es.close();
-            markDead("会话已失效，请重新扫码");
-          }
-        }).catch(function () {
-          markDown("和" + hostWord + "断开了，正在重连");
-        });
-      }, 700);
-    };
+      harvestPicked();
+      if (!es || es.readyState === EventSource.CLOSED) openEvents();
+    });
 
     function send() {
       var text = box.value;
@@ -1895,35 +1947,84 @@
       var ua = navigator.userAgent || "";
       return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     }
+    function touchPhone() {
+      var ua = navigator.userAgent || "";
+      return (navigator.maxTouchPoints || 0) > 0 && /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    }
     function bindPick(btn, input, asDir) {
       if (!btn || !input) return;
+      var direct = !!(btn.contains && btn.contains(input));
+      if (!asDir && touchPhone()) input.removeAttribute("accept");
       if (asDir && iosNoFolder()) {
-        btn.addEventListener("click", function (e) {
+        var blockFolder = function (e) {
           e.preventDefault();
           status.textContent = "这部手机的浏览器不能选文件夹，请用「文件」多选。";
+        };
+        (direct ? input : btn).addEventListener("click", blockFolder);
+      } else if (direct) {
+        input.webkitdirectory = true;
+        try { input.setAttribute("webkitdirectory", ""); } catch (err) {}
+        input.addEventListener("click", function (e) {
+          if (!alive || fileBusy) {
+            e.preventDefault();
+            return;
+          }
+          pickerArmed = true;
         });
-      } else if (!asDir) {
+      } else {
         btn.addEventListener("click", function (e) {
           e.preventDefault();
           if (!alive || fileBusy) return;
           try {
             input.value = "";
+            pickerArmed = true;
             input.click();
           } catch (err) {
+            pickerArmed = false;
             status.textContent = "打不开系统选择框";
           }
         });
-      } else {
-        btn.addEventListener("click", function () {
-          if (!alive || fileBusy) return;
-          try { input.value = ""; } catch (err) {}
-        });
       }
       input.addEventListener("change", function () {
-        var list = input.files;
-        enqueue(list, asDir);
+        pickerArmed = false;
+        var live = input.files;
+        var copy = [];
+        if (live) {
+          for (var i = 0; i < live.length; i++) copy.push(live[i]);
+        }
+        if (!copy.length) return;
+        var folder = asDir;
+        var fellBack = false;
+        if (asDir && !copy[0].webkitRelativePath) {
+          folder = false;
+          fellBack = true;
+        }
+        enqueue(copy, folder);
+        if (fellBack) {
+          status.textContent = "这个浏览器不能选文件夹，已按普通文件加入 " + copy.length + " 个。";
+        }
         try { input.value = ""; } catch (err) {}
       });
+    }
+    function harvestPicked() {
+      if (!pickerArmed) return;
+      var took = false;
+      function take(input, asDir) {
+        if (!input || !input.files || !input.files.length) return;
+        var copy = [];
+        for (var i = 0; i < input.files.length; i++) copy.push(input.files[i]);
+        var folder = asDir;
+        var fellBack = asDir && !copy[0].webkitRelativePath;
+        if (fellBack) folder = false;
+        enqueue(copy, folder);
+        if (fellBack) status.textContent = "这个浏览器不能选文件夹，已按普通文件加入 " + copy.length + " 个。";
+        try { input.value = ""; } catch (err) {}
+        took = true;
+      }
+      take(inImg, false);
+      take(inFile, false);
+      take(inDir, true);
+      if (took) pickerArmed = false;
     }
     bindPick(pickImg, inImg, false);
     bindPick(pickFile, inFile, false);
@@ -2109,12 +2210,10 @@
     var floatMain = document.getElementById("floatMain");
     var settings = document.getElementById("settings");
     var optFloat = document.getElementById("optFloat");
-    var optFloatSend = document.getElementById("optFloatSend");
     var optDlPrompt = document.getElementById("optDlPrompt");
     var optZoom = document.getElementById("optZoom");
     var floatLock = document.getElementById("floatLock");
     if (optFloat) optFloat.checked = floatPrefs.show !== false;
-    if (optFloatSend) optFloatSend.checked = !!floatPrefs.send;
     if (optDlPrompt) optDlPrompt.checked = !!floatPrefs.dlPrompt;
     applyZoomLock();
     function openSettings() { if (settings) settings.hidden = false; }
@@ -2135,13 +2234,6 @@
         paintFloat();
       });
     }
-    if (optFloatSend) {
-      optFloatSend.addEventListener("change", function () {
-        floatPrefs.send = !!optFloatSend.checked;
-        saveFloatPrefs();
-        paintFloat();
-      });
-    }
     if (optDlPrompt) {
       optDlPrompt.addEventListener("change", function () {
         floatPrefs.dlPrompt = !!optDlPrompt.checked;
@@ -2153,58 +2245,111 @@
         setZoomLock(!!optZoom.checked);
       });
     }
+    function closeFloatMenu() {
+      var menu = document.getElementById("floatMenu");
+      if (menu) menu.hidden = true;
+    }
+    function toggleFloatMenu() {
+      var menu = document.getElementById("floatMenu");
+      var dock = document.getElementById("floatDock");
+      if (!menu || !dock) return;
+      if (!menu.hidden) {
+        menu.hidden = true;
+        return;
+      }
+      if (dock.getBoundingClientRect().top < 140) menu.classList.add("below");
+      else menu.classList.remove("below");
+      menu.hidden = false;
+    }
     if (floatLock) {
       floatLock.addEventListener("click", function () {
         setZoomLock(!floatPrefs.lockZoom);
+        closeFloatMenu();
       });
     }
+    var floatSendBtn = document.getElementById("floatSend");
+    if (floatSendBtn) floatSendBtn.addEventListener("click", closeFloatMenu);
     var floatDock = document.getElementById("floatDock") || floatDot;
     if (floatDock && floatMain) {
-      var drag = null;
+      var HOLD_MS = 450;
+      var MOVE_PX = 10;
+      var press = null;
+      var holdTimer = null;
+      function armSend() {
+        if (!press || press.moved || press.held) return;
+        press.held = true;
+        floatMain.classList.remove("arming");
+        var box = document.getElementById("box");
+        if (!box || !String(box.value || "").length) {
+          var status = document.getElementById("status");
+          if (status) status.textContent = "先写点文字";
+          return;
+        }
+        var btn = document.getElementById("floatSend");
+        if (btn) btn.click();
+      }
       floatMain.addEventListener("pointerdown", function (e) {
         if (e.button != null && e.button !== 0) return;
-        var box = floatDock.getBoundingClientRect();
-        drag = { x: e.clientX, y: e.clientY, left: box.left, top: box.top, moved: false };
+        if (e.preventDefault) e.preventDefault();
+        var rect = floatDock.getBoundingClientRect();
+        press = { x: e.clientX, y: e.clientY, left: rect.left, top: rect.top, moved: false, held: false };
         floatDragged = false;
-        floatDock.classList.add("dragging");
+        floatMain.classList.add("arming");
         if (floatMain.setPointerCapture) floatMain.setPointerCapture(e.pointerId);
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(armSend, HOLD_MS);
       });
       floatMain.addEventListener("pointermove", function (e) {
-        if (!drag) return;
-        var dx = e.clientX - drag.x;
-        var dy = e.clientY - drag.y;
-        if (Math.abs(dx) + Math.abs(dy) > 5) drag.moved = true;
-        if (!drag.moved) return;
-        floatPrefs.x = drag.left + dx;
-        floatPrefs.y = drag.top + dy;
+        if (!press) return;
+        var dx = e.clientX - press.x;
+        var dy = e.clientY - press.y;
+        if (!press.moved && Math.abs(dx) + Math.abs(dy) < MOVE_PX) return;
+        if (!press.moved) {
+          press.moved = true;
+          clearTimeout(holdTimer);
+          floatMain.classList.remove("arming");
+          closeFloatMenu();
+          if (!press.held) floatDock.classList.add("dragging");
+        }
+        if (press.held) return;
+        floatPrefs.x = press.left + dx;
+        floatPrefs.y = press.top + dy;
         placeFloat();
       });
-      function endDrag() {
-        if (!drag) return;
-        floatDragged = drag.moved;
-        if (drag.moved) saveFloatPrefs();
-        drag = null;
+      function endPress(cancelled) {
+        if (!press) return;
+        clearTimeout(holdTimer);
+        var moved = press.moved;
+        var held = press.held;
+        floatMain.classList.remove("arming");
+        if (moved && !held) saveFloatPrefs();
+        floatDragged = moved || held;
+        press = null;
         floatDock.classList.remove("dragging");
+        if (!cancelled && !moved && !held) toggleFloatMenu();
         paintFloat();
       }
-      floatMain.addEventListener("pointerup", endDrag);
-      floatMain.addEventListener("pointercancel", endDrag);
-      floatMain.addEventListener("click", function () {
-        if (floatDragged) {
-          floatDragged = false;
-          return;
-        }
-        var prog = document.getElementById("progressWrap");
-        if (floatBusy && prog) {
-          prog.scrollIntoView({ behavior: "smooth", block: "center" });
-          return;
-        }
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      });
+      floatMain.addEventListener("pointerup", function () { endPress(false); });
+      floatMain.addEventListener("pointercancel", function () { endPress(true); });
+      floatMain.addEventListener("contextmenu", function (e) { e.preventDefault(); });
     }
+    document.addEventListener("pointerdown", function (e) {
+      var menu = document.getElementById("floatMenu");
+      var dock = document.getElementById("floatDock");
+      if (!menu || menu.hidden) return;
+      if (dock && dock.contains(e.target)) return;
+      menu.hidden = true;
+    });
     window.addEventListener("scroll", paintFloat, { passive: true });
     window.addEventListener("resize", placeFloat);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", placeFloat);
+      window.visualViewport.addEventListener("scroll", placeFloat);
+    }
+    window.addEventListener("focusin", function () { setTimeout(placeFloat, 60); });
+    window.addEventListener("focusout", function () { setTimeout(placeFloat, 60); });
     paintFloat();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(placeFloat);
   }
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.TsWebBridge = api;
