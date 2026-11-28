@@ -520,7 +520,7 @@ public class TextSendMain {
         buttonSettings.setToolTipText("局域网探测、授权限流/冷却/黑名单等");
         buttonSettings.addActionListener(e -> showSettings());
         buttonRole.setToolTipText("在服务端 / 客户端之间切换（已连接时不可用）");
-        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件。没有 v1 客户端、兼容模式开着时，文字和文件发给浏览器里的手机。");
+        buttonSend.setToolTipText("发送文字；若列表有选中文件则发文件。按「发到」规则投送（只发 App 绝不进网页）。");
         buttonFile.setToolTipText("选择文件加入待发列表");
         buttonQr.setToolTipText("显示连接二维码（服务端）；手动打开后连上也不自动关");
         toggleMini.setToolTipText("置顶小窗 / 恢复大窗");
@@ -935,7 +935,7 @@ public class TextSendMain {
             buttonBrowse.setToolTipText("<html>左键：选文件<br>Shift+左键：打勾选多个文件夹<br>右键：系统文件选择框</html>");
         }
         if (buttonSend != null && !miniMode) {
-            buttonSend.setToolTipText("发送文字；列表有选中则发文件（Ctrl+Enter 同效）。没有 v1 客户端时发给兼容模式网页。");
+            buttonSend.setToolTipText("发送文字；列表有选中则发文件（Ctrl+Enter 同效）。按「发到」规则投送（只发 App 绝不进网页）。");
         }
         if (buttonQr != null) {
             buttonQr.setToolTipText(isServerMode
@@ -1277,8 +1277,9 @@ public class TextSendMain {
                 comboSendTarget.setSelectedIndex(UserConfig.getSendTargetIndex());
                 comboSendTarget.setFont(comboSendTarget.getFont().deriveFont((float) UserConfig.s(12)));
                 comboSendTarget.setToolTipText("<html>默认发给所有：App 和网页都收到<br>"
-                        + "只发 App：有客户端走 App，没有就走网页<br>只发兼容：只给网页<br>"
-                        + "状态栏能看到兼容端口和页面数。App 服务没开时一律发网页。</html>");
+                        + "只发 App：只给已连接的 App，绝不发网页（无客户端则提示，不回落）<br>"
+                        + "只发兼容：只给网页<br>"
+                        + "发给所有时，App 服务没开仍可发网页。状态栏显示兼容端口和页面数。</html>");
                 comboSendTarget.addActionListener(e -> {
                     if (comboSendTarget != null) {
                         UserConfig.setSendTargetIndex(comboSendTarget.getSelectedIndex());
@@ -2223,32 +2224,35 @@ public class TextSendMain {
         boolean appClients = alive > 0;
         boolean web = webBridgeReady();
         boolean webProc = webBridgeAnyRunning();
-        if (!appUp) {
-            if (web) {
-                return new SendRoute(false, true, null);
-            }
-            return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "服务未运行");
-        }
         String target = UserConfig.getSendTarget();
+        // 只发兼容：绝不走 App
         if ("web".equals(target)) {
             if (web) {
                 return new SendRoute(false, true, null);
             }
             return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "兼容模式未开");
         }
-        if ("all".equals(target)) {
-            if (!appClients && !web) {
-                return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "没有已连接的客户端");
+        // 只发 App：绝不走网页，避免误发到浏览器
+        if ("app".equals(target)) {
+            if (appClients) {
+                return new SendRoute(true, false, null);
             }
-            return new SendRoute(appClients, web, null);
+            if (!appUp) {
+                return new SendRoute(false, false, "服务未运行");
+            }
+            return new SendRoute(false, false, "没有已连接的客户端");
         }
-        if (appClients) {
-            return new SendRoute(true, false, null);
+        // 发给所有：App 服务未开时仍可只发网页
+        if (!appUp) {
+            if (web) {
+                return new SendRoute(false, true, null);
+            }
+            return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "服务未运行");
         }
-        if (web) {
-            return new SendRoute(false, true, null);
+        if (!appClients && !web) {
+            return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "没有已连接的客户端");
         }
-        return new SendRoute(false, false, webProc ? "兼容模式会话已过期" : "没有已连接的客户端");
+        return new SendRoute(appClients, web, null);
     }
 
     private static String webBridgeStatusBrief() {
@@ -4546,7 +4550,7 @@ public class TextSendMain {
                 · 「移除」：从待发列表拿掉选中项，不删磁盘上的文件。
                 · 「下载目录」：打开本机「下载/TextSend」。
                 · 「二维码」：手动打开连接二维码。Esc 关闭。
-                · 「发到」：在固定 PIN 那一行，默认发给所有（App 和网页都收到）。只发 App：有客户端走 App，没有就走网页。只发兼容：只给网页。App 服务没开时一律发网页；网页也没开就没有发送口。状态栏显示兼容端口和页面数。设置里「兼容模式与 App 互斥」默认关。
+                · 「发到」：在固定 PIN 那一行，默认发给所有（App 和网页都收到）。只发 App：只给已连接的 App，绝不发网页（无客户端则提示，不回落，避免误发）。只发兼容：只给网页。发给所有时，App 服务没开仍可发网页；网页也没开就没有发送口。状态栏显示兼容端口和页面数。设置里「兼容模式与 App 互斥」默认关。
                 · 「兼容模式」：在监听那一行。窗口里有 A 明文、B 加密、C 证书，默认停在 B。A/B/C 同时只开一档，共用网页端口（默认 54301）。C 是 HTTPS，正文仍加密。根证书可选：不装也能扫码打开，浏览器会提示不受信任；想去掉提示再点「根证书」，装进手机并完全信任。「启动」左键开或停；右键启动并用默认浏览器打开链接，已经在跑则只打开。网页可发文字、图片、文件；文件夹看浏览器是否支持。收到的文件进「下载/TextSend」，单张图片还会放进剪贴板。电脑发来的文件在网页里预览、下载或清空。点二维码复制链接，点链接用浏览器打开。
                 · 「在线」：待授权、App 客户端和网页会话在同一张列表。服务端没开也能看网页。先对核对码，再允许 / 拒绝 / 拉黑；已连接可踢下线。网页可断开，也可拉黑。拉黑 App 只拒 App，拉黑网页只拒兼容模式。外接或本机键盘须按住 Alt：Alt+Y 允许、Alt+N 拒绝、Alt+B 拉黑、Alt+K 踢下线或断开网页，↑↓ 换一台。
                 · 「设置」：探测、限流、冷却、App 黑名单、兼容模式黑名单、人数上限。
